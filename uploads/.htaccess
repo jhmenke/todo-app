@@ -1,0 +1,2 @@
+# Block all direct access — files served only through download.php
+Require all denied

@@ -1,0 +1,15 @@
+Options -Indexes
+
+# Redirect bare directory to index.php
+DirectoryIndex index.php
+
+# Protect sensitive files from direct access
+<FilesMatch "^(config|cron)\.php$">
+    Require all denied
+</FilesMatch>
+
+# PHP upload limits (adjust as needed when uploads are enabled)
+php_value upload_max_filesize 20M
+php_value post_max_size 22M
+php_value session.cookie_httponly 1
+php_value session.cookie_samesite Strict

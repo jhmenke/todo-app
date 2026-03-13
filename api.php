@@ -314,14 +314,17 @@ function find_user(int $uid): never {
 
 // ─── Settings ─────────────────────────────────────────────────
 function get_settings(int $uid): never {
-    $stmt = db()->prepare('SELECT id, email, notify_minutes FROM users WHERE id=?');
+    $stmt = db()->prepare('SELECT id, email, notify_minutes, telegram_chat_id, notify_channel FROM users WHERE id=?');
     $stmt->execute([$uid]);
     json_out($stmt->fetch());
 }
 
 function update_settings(int $uid, array $b): never {
-    $minutes = max(1, min(1440, (int)($b['notify_minutes'] ?? 5)));
-    db()->prepare('UPDATE users SET notify_minutes=? WHERE id=?')->execute([$minutes, $uid]);
+    $minutes  = max(1, min(1440, (int)($b['notify_minutes'] ?? 5)));
+    $tg       = trim($b['telegram_chat_id'] ?? '');
+    $channel  = in_array($b['notify_channel'] ?? '', ['telegram','email','both']) ? $b['notify_channel'] : 'telegram';
+    db()->prepare('UPDATE users SET notify_minutes=?, telegram_chat_id=?, notify_channel=? WHERE id=?')
+        ->execute([$minutes, $tg ?: null, $channel, $uid]);
     $_SESSION['user']['notify_minutes'] = $minutes;
     json_out(['ok' => true, 'notify_minutes' => $minutes]);
 }

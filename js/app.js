@@ -139,9 +139,11 @@ function todoApp() {
         shareDropdownIndex: -1, // keyboard-highlighted index in shareDropdown
 
         // ── Settings modal ────────────────────────────────────
-        showSettings:    false,
-        settingsMinutes: 5,
-        settingsError:   '',
+        showSettings:     false,
+        settingsMinutes:  5,
+        settingsTelegram: '',
+        settingsChannel:  'telegram',
+        settingsError:    '',
         pwCurrent:   '',
         pwNew:       '',
         pwNew2:      '',
@@ -159,7 +161,9 @@ function todoApp() {
                 this.api('GET', 'settings'),
                 this.api('GET', 'get_users'),
             ]);
-            if (s.notify_minutes) this.settingsMinutes = s.notify_minutes;
+            if (s.notify_minutes)    this.settingsMinutes  = s.notify_minutes;
+            if (s.telegram_chat_id)  this.settingsTelegram = s.telegram_chat_id;
+            if (s.notify_channel)    this.settingsChannel  = s.notify_channel;
             this.allUsers = Array.isArray(users) ? users : [];
         },
 
@@ -472,7 +476,11 @@ function todoApp() {
         // ── Settings ──────────────────────────────────────────
         async saveSettings() {
             this.settingsError = '';
-            const r = await this.api('POST', 'update_settings', { notify_minutes: parseInt(this.settingsMinutes) });
+            const r = await this.api('POST', 'update_settings', {
+                notify_minutes:    parseInt(this.settingsMinutes),
+                telegram_chat_id:  this.settingsTelegram.trim(),
+                notify_channel:    this.settingsChannel,
+            });
             if (r.error) { this.settingsError = r.error; return; }
             this.toast('Settings saved.');
         },

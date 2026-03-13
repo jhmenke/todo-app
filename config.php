@@ -6,6 +6,13 @@ define('APP_URL',  'http://localhost/todo-app');  // no trailing slash
 // ─── Database ─────────────────────────────────────────────────
 define('DB_PATH', __DIR__ . '/db/todos.db');
 
+// ─── Cron ──────────────────────────────────────────────────────
+define('CRON_LOG_PATH',    __DIR__ . '/cron.log');
+define('CRON_DAILY_LIMIT', 100);  // max emails sent per day across all users
+
+// ─── Telegram ─────────────────────────────────────────────────
+define('TELEGRAM_BOT_TOKEN', '');  // set to your bot token from @BotFather
+
 // ─── Email ────────────────────────────────────────────────────
 // Set SMTP_HOST to '' to use PHP mail() instead
 define('SMTP_HOST',      '');
@@ -92,6 +99,28 @@ function db_init(PDO $db): void {
             created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
         );
     ");
+    // Migrations: add columns if they don't exist yet (SQLite ignores duplicates via try/catch)
+    foreach ([
+        "ALTER TABLE users ADD COLUMN telegram_chat_id TEXT",
+        "ALTER TABLE users ADD COLUMN notify_channel TEXT NOT NULL DEFAULT 'telegram'",
+    ] as $sql) {
+        try { $db->exec($sql); } catch (PDOException) {}
+    }
+}
+
+// ─── Telegram sending ──────────────────────────────────────────
+function send_telegram(string $chat_id, string $text): bool {
+    if (!TELEGRAM_BOT_TOKEN) return false;
+    $url     = 'https://api.telegram.org/bot' . TELEGRAM_BOT_TOKEN . '/sendMessage';
+    $payload = json_encode(['chat_id' => $chat_id, 'text' => $text, 'parse_mode' => 'HTML']);
+    $ctx     = stream_context_create(['http' => [
+        'method'  => 'POST',
+        'header'  => "Content-Type: application/json\r\n",
+        'content' => $payload,
+        'timeout' => 10,
+    ]]);
+    $result = @file_get_contents($url, false, $ctx);
+    return $result !== false && str_contains($result, '"ok":true');
 }
 
 // ─── Email sending ────────────────────────────────────────────

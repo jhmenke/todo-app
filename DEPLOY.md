@@ -52,10 +52,10 @@ crontab -e
 Add:
 
 ```
-* * * * * php /var/www/html/todo-app/cron.php >> /var/log/todo-cron.log 2>&1
+* * * * * php /var/www/html/todo-app/cron.php
 ```
 
-This runs every minute and sends notification emails for todos that activate within each user's configured lead time.
+This runs every minute and sends notification emails for todos that activate within each user's configured lead time. Logs are written to `cron.log` in the app directory. A hard limit of 20 emails per day (configurable via `CRON_DAILY_LIMIT` in `config.php`) protects against runaway sending.
 
 ### 5. nginx config (if not using Apache)
 

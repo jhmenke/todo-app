@@ -514,9 +514,38 @@ $user = require_auth();
             </button>
         </div>
         <div class="px-6 py-5 space-y-6">
-            <!-- Notify minutes -->
+            <!-- Notify channel -->
             <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Email notification lead time</label>
+                <label class="block text-sm font-medium text-gray-700 mb-2">Notification channel</label>
+                <div class="flex flex-col gap-1.5 text-sm text-gray-700">
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input type="radio" x-model="settingsChannel" value="telegram" class="accent-indigo-600"> Telegram
+                    </label>
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input type="radio" x-model="settingsChannel" value="email" class="accent-indigo-600"> Email
+                    </label>
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input type="radio" x-model="settingsChannel" value="both" class="accent-indigo-600"> Both
+                    </label>
+                </div>
+            </div>
+
+            <!-- Telegram chat ID -->
+            <div x-show="settingsChannel === 'telegram' || settingsChannel === 'both'">
+                <label class="block text-sm font-medium text-gray-700 mb-1">Telegram Chat ID</label>
+                <input type="text" x-model="settingsTelegram" placeholder="e.g. 123456789"
+                    class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+                <p class="text-xs text-gray-400 mt-1.5 leading-relaxed">
+                    To find your Chat ID:
+                    1. Open Telegram and search for <strong>@userinfobot</strong>.<br>
+                    2. Start the bot and send it any message.<br>
+                    3. It will reply with your numeric Chat ID — paste it above.
+                </p>
+            </div>
+
+            <!-- Notify lead time -->
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Notification lead time</label>
                 <div class="flex items-center gap-2">
                     <input type="number" x-model="settingsMinutes" min="1" max="1440" class="w-24 px-3 py-2 border border-gray-200 rounded-lg text-sm text-center">
                     <span class="text-sm text-gray-600">minutes before active</span>

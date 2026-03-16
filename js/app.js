@@ -51,10 +51,13 @@ function parseDateTag(raw) {
     // ── 3. Day / date (most specific first) ─────────────────────
     let dateStr = '';
     const DOW = {
-        sunday: 0, sonntag: 0, monday: 1, montag: 1,
-        tuesday: 2, dienstag: 2, wednesday: 3, mittwoch: 3,
-        thursday: 4, donnerstag: 4, friday: 5, freitag: 5,
-        saturday: 6, samstag: 6,
+        su: 0, sunday: 0, sonntag: 0,
+        mo: 1, monday: 1, montag: 1,
+        di: 2, tue: 2, tuesday: 2, dienstag: 2,
+        mi: 3, wed: 3, wednesday: 3, mittwoch: 3,
+        do: 4, thu: 4, thursday: 4, donnerstag: 4,
+        fr: 5, friday: 5, freitag: 5,
+        sa: 6, saturday: 6, samstag: 6,
     };
 
     if (s.includes('übermorgen') || s.includes('uebermorgen') || /\bday after tomorrow\b/.test(s)) {
@@ -69,7 +72,7 @@ function parseDateTag(raw) {
     } else if (/\bnext week\b/.test(s) || s.includes('nächste woche')) {
         dateStr = fmt(addDays((1 - today.getDay() + 7) % 7 || 7)); // next Monday
         s = s.replace(/\bnext week\b/, ' ').replace('nächste woche', ' ');
-    } else if (match = s.match(/\b(sunday|sonntag|monday|montag|tuesday|dienstag|wednesday|mittwoch|thursday|donnerstag|friday|freitag|saturday|samstag)\b/)) {
+    } else if (match = s.match(/(?:^|(?<=\s))(su|sunday|sonntag|mo|monday|montag|di|tue|tuesday|dienstag|mi|wed|wednesday|mittwoch|do|thu|thursday|donnerstag|fr|friday|freitag|sa|saturday|samstag)(?=\s|$)/)) {
         dateStr = fmt(addDays((DOW[match[1]] - today.getDay() + 7) % 7 || 7));
         s = s.replace(match[0], ' ');
     } else if (match = s.match(/(\d{1,2})\.(\d{1,2})\.(\d{4})?/)) {
@@ -137,6 +140,8 @@ function todoApp() {
         showTagForm:   false,
         shareDropdown: [],      // filtered users shown while typing <+
         shareDropdownIndex: -1, // keyboard-highlighted index in shareDropdown
+        tagDropdown: [],        // filtered tags shown while typing #
+        tagDropdownIndex: -1,   // keyboard-highlighted index in tagDropdown
 
         // ── Settings modal ────────────────────────────────────
         showSettings:     false,
@@ -553,6 +558,7 @@ function todoApp() {
             }
             if (newTitle !== this.form.title) this.form.title = newTitle;
             this.updateShareDropdown();
+            this.updateTagDropdown();
         },
 
         // Show user dropdown when title contains an incomplete <+... (no closing >)
@@ -570,17 +576,49 @@ function todoApp() {
         },
 
         shareDropdownNav(e) {
-            if (this.shareDropdown.length === 0) return;
+            const sd = this.shareDropdown.length > 0;
+            const td = this.tagDropdown.length > 0;
+            if (!sd && !td) return;
             if (e.key === 'ArrowDown' || e.key === 'Tab') {
                 e.preventDefault();
-                this.shareDropdownIndex = (this.shareDropdownIndex + 1) % this.shareDropdown.length;
+                if (sd) this.shareDropdownIndex = (this.shareDropdownIndex + 1) % this.shareDropdown.length;
+                if (td) this.tagDropdownIndex = (this.tagDropdownIndex + 1) % this.tagDropdown.length;
             } else if (e.key === 'ArrowUp') {
                 e.preventDefault();
-                this.shareDropdownIndex = (this.shareDropdownIndex - 1 + this.shareDropdown.length) % this.shareDropdown.length;
-            } else if (e.key === 'Enter' && this.shareDropdownIndex >= 0) {
-                e.preventDefault();
-                this.selectShareUser(this.shareDropdown[this.shareDropdownIndex].email);
+                if (sd) this.shareDropdownIndex = (this.shareDropdownIndex - 1 + this.shareDropdown.length) % this.shareDropdown.length;
+                if (td) this.tagDropdownIndex = (this.tagDropdownIndex - 1 + this.tagDropdown.length) % this.tagDropdown.length;
+            } else if (e.key === 'Enter') {
+                if (sd && this.shareDropdownIndex >= 0) {
+                    e.preventDefault();
+                    this.selectShareUser(this.shareDropdown[this.shareDropdownIndex].email);
+                } else if (td && this.tagDropdownIndex >= 0) {
+                    e.preventDefault();
+                    this.selectTag(this.tagDropdown[this.tagDropdownIndex].id);
+                }
             }
+        },
+
+        // Show tag dropdown when title contains an incomplete #tagname (no space after)
+        updateTagDropdown() {
+            const m = this.form.title.match(/#([^\s#]*)$/);
+            if (m !== null) {
+                const q = m[1].toLowerCase();
+                this.tagDropdown = this.tags.filter(t =>
+                    t.name.toLowerCase().includes(q)
+                );
+            } else {
+                this.tagDropdown = [];
+            }
+            this.tagDropdownIndex = -1;
+        },
+
+        selectTag(tagId) {
+            this.form.title = this.form.title.replace(/#[^\s#]*$/, '').replace(/\s+/g, ' ').trim();
+            if (!this.form.tag_ids.includes(tagId)) {
+                this.form.tag_ids.push(tagId);
+            }
+            this.tagDropdown = [];
+            this.tagDropdownIndex = -1;
         },
 
         // Called when user clicks a name in the share dropdown

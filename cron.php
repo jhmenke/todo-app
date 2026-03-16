@@ -6,7 +6,7 @@
  * Logs are written to CRON_LOG_PATH (defined in config.php).
  * Sends at most CRON_DAILY_LIMIT emails per calendar day.
  */
-require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/app.php';
 
 $log = function(string $msg): void {
     $line = '[' . date('Y-m-d H:i:s') . '] ' . $msg . PHP_EOL;

@@ -1,7 +1,7 @@
 <?php
-require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/app.php';
 
-if (session_status() === PHP_SESSION_NONE) session_start();
+start_session();
 
 // Already logged in
 if (!empty($_SESSION['user'])) {

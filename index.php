@@ -1,5 +1,5 @@
 <?php
-require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/app.php';
 $user = require_auth();
 ?><!DOCTYPE html>
 <html lang="en">
@@ -369,7 +369,7 @@ $user = require_auth();
                     <input type="text" x-model="form.title" placeholder="What needs doing?" autofocus
                         class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
                         @input="parseTagsInTitle()"
-                        @keydown.escape="shareDropdown = []"
+                        @keydown.escape="shareDropdown = []; tagDropdown = []"
                         @keydown="shareDropdownNav($event)">
 
                     <!-- User share dropdown (appears when typing <+) -->
@@ -382,6 +382,19 @@ $user = require_auth();
                                 <span class="w-6 h-6 rounded-full bg-indigo-100 text-indigo-600 text-xs font-bold flex items-center justify-center flex-shrink-0"
                                     x-text="u.email.charAt(0).toUpperCase()"></span>
                                 <span x-text="u.email" class="text-gray-700"></span>
+                            </button>
+                        </template>
+                    </div>
+
+                    <!-- Tag dropdown (appears when typing #) -->
+                    <div x-show="tagDropdown.length > 0"
+                         class="absolute top-full left-0 right-0 z-20 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
+                        <template x-for="(tag, i) in tagDropdown" :key="tag.id">
+                            <button type="button" @click="selectTag(tag.id)"
+                                :class="i === tagDropdownIndex ? 'bg-indigo-50' : 'hover:bg-indigo-50'"
+                                class="w-full flex items-center gap-2.5 px-3 py-2 text-sm transition-colors text-left">
+                                <span class="w-3 h-3 rounded-full flex-shrink-0" :style="`background:${tag.color}`"></span>
+                                <span x-text="tag.name" class="text-gray-700"></span>
                             </button>
                         </template>
                     </div>
@@ -401,8 +414,9 @@ $user = require_auth();
 
                 <p class="text-xs text-gray-400 mt-1.5">
                     <code class="bg-gray-100 px-1 rounded">&lt;morgen 9 Uhr&gt;</code>
-                    <code class="bg-gray-100 px-1 rounded">&lt;friday 18:00&gt;</code>
+                    <code class="bg-gray-100 px-1 rounded">&lt;dienstag 15 Uhr&gt;</code>
                     <code class="bg-gray-100 px-1 rounded">&lt;+email&gt;</code> to share
+                    &nbsp;·&nbsp; <code class="bg-gray-100 px-1 rounded">#Tag</code> to label
                 </p>
             </div>
 

@@ -4,7 +4,7 @@
  * Files are never served directly; all downloads go through here
  * so auth is enforced before any file is sent.
  */
-require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/app.php';
 $user = require_auth();
 $uid  = (int)$user['id'];
 

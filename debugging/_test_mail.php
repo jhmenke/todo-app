@@ -3,15 +3,19 @@
  * Mail + SMTP diagnostic — DELETE or restrict this file after testing.
  * Access: https://jhmenke.de/todo-app/test_mail.php
  */
-require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/app.php';
 $user = require_auth();  // must be logged in
 
 $result  = null;
 $to      = $user['email'];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $to     = trim($_POST['to'] ?? $user['email']);
-    $result = run_test($to);
+    if (!csrf_verify($_POST['csrf'] ?? '')) {
+        $result = [['label' => 'CSRF', 'ok' => false, 'detail' => 'Session expired. Reload and try again.']];
+    } else {
+        $to     = trim($_POST['to'] ?? $user['email']);
+        $result = run_test($to);
+    }
 }
 
 function run_test(string $to): array {
@@ -66,6 +70,7 @@ function run_test(string $to): array {
     </div>
 
     <form method="POST" class="flex gap-2">
+        <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
         <input type="email" name="to" value="<?= h($to) ?>"
             class="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm">
         <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors">

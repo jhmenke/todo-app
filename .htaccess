@@ -4,12 +4,16 @@ Options -Indexes
 DirectoryIndex index.php
 
 # Protect sensitive files from direct access
-<FilesMatch "^(config|cron)\.php$">
+<FilesMatch "^(config.*|cron)\.php$">
     Require all denied
 </FilesMatch>
 
-# PHP upload limits (adjust as needed when uploads are enabled)
-php_value upload_max_filesize 20M
-php_value post_max_size 22M
-php_value session.cookie_httponly 1
-php_value session.cookie_samesite Strict
+<FilesMatch "\.(db|db-wal|db-shm|log)$">
+    Require all denied
+</FilesMatch>
+
+# PHP upload limits (ignored under PHP-FPM; set these in php.ini / pool config instead)
+<IfModule mod_php.c>
+    php_value upload_max_filesize 20M
+    php_value post_max_size 22M
+</IfModule>

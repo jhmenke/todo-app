@@ -1,5 +1,27 @@
-const COLORS = ['#6366f1','#ec4899','#f59e0b','#10b981','#3b82f6','#ef4444','#8b5cf6','#14b8a6','#f97316','#64748b'];
-const DAYS   = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const COLORS = ['#5b4dff','#ec4899','#f59e0b','#10b981','#3b82f6','#ef4444','#8b5cf6','#14b8a6','#f97316','#64748b'];
+
+function i18n(key, vars = {}) {
+    let cur = window.I18N || {};
+    for (const p of key.split('.')) {
+        if (cur == null || typeof cur !== 'object' || !(p in cur)) return key;
+        cur = cur[p];
+    }
+    if (typeof cur !== 'string') return key;
+    return cur.replace(/\{(\w+)\}/g, (_, k) => (vars[k] != null ? String(vars[k]) : ''));
+}
+
+function pad2(n) { return String(n).padStart(2, '0'); }
+function formatFixedDate(d, withTime = true) {
+    const day = `${d.getFullYear()}.${pad2(d.getMonth() + 1)}.${pad2(d.getDate())}`;
+    if (!withTime) return day;
+    if (window.LOCALE === 'de') {
+        return `${day} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+    }
+    let h = d.getHours();
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    h = h % 12 || 12;
+    return `${day} ${h}:${pad2(d.getMinutes())} ${ampm}`;
+}
 
 // ── Datetime tag parser ─────────────────────────────────────────
 // Parses the content inside <...> into { date: 'YYYY-MM-DD', time: 'HH:MM' }
@@ -84,10 +106,10 @@ function parseDateTag(raw) {
         s = s.replace(match[0], ' ');
     }
 
-    // ── 4. Bare number → treat as hour ───────────────────────────
+    // ── 4. Bare hour only if what's left after date words is just a number
     s = s.replace(/\s+/g, ' ').trim();
-    if (h === null && (match = s.match(/\b(\d{1,2})\b/))) {
-        const n = parseInt(match[1]);
+    if (h === null && dateStr && /^\d{1,2}$/.test(s)) {
+        const n = parseInt(s, 10);
         if (n >= 0 && n <= 23) h = n;
     }
 
@@ -107,10 +129,13 @@ function todoApp() {
 
         // ── Filters / Sort ────────────────────────────────────
         filterTagId:    null,
-        filterStatus:   'pending',
-        sortBy:         'active_at',
+        filterStatus:   'today',
+        sortBy:         'priority',
         sortDir:        'asc',
-        hideCompleted:  false,
+        hideCompleted:  true,
+        sidebarOpen:    false,
+        searchQuery:    '',
+        searchTimer:    null,
         completedFrom:  '',
         completedTo:    '',
 
@@ -132,11 +157,12 @@ function todoApp() {
 
         // ── Create/Edit Modal ─────────────────────────────────
         modal:         null,   // null | 'create' | todo (for edit)
-        form:          { title: '', active_date: '', active_time: '', tag_ids: [], recur_type: '', recur_interval: 1, recur_days: [], recur_ends_at: '', share_emails: [] },
+        form:          { title: '', active_date: '', active_time: '', tag_ids: [], recur_type: '', recur_interval: 1, recur_days: [], recur_ends_at: '', share_emails: [], priority: 4 },
+        newSubtask:    '',
         formError:     '',
         savingForm:    false,
         newTagName:    '',
-        newTagColor:   '#6366f1',
+        newTagColor:   '#5b4dff',
         showTagForm:   false,
         shareDropdown: [],      // filtered users shown while typing <+
         shareDropdownIndex: -1, // keyboard-highlighted index in shareDropdown
@@ -148,6 +174,7 @@ function todoApp() {
         settingsMinutes:  5,
         settingsTelegram: '',
         settingsChannel:  'telegram',
+        settingsLocale:   (typeof window !== 'undefined' && window.LOCALE) ? window.LOCALE : 'en',
         settingsError:    '',
         pwCurrent:   '',
         pwNew:       '',
@@ -155,9 +182,14 @@ function todoApp() {
         pwError:     '',
         pwOk:        false,
 
-        // ── Toast ─────────────────────────────────────────────
-        toastMsg: '',
-        toastTimer: null,
+        // ── Toast / undo ──────────────────────────────────────
+        toastMsg:    '',
+        toastTimer:  null,
+        undoId:      null,
+        undoNextId:  null,
+        leavingId:   null,
+
+        t(key, vars = {}) { return i18n(key, vars); },
 
         // ── Init ──────────────────────────────────────────────
         async init() {
@@ -169,14 +201,21 @@ function todoApp() {
             if (s.notify_minutes)    this.settingsMinutes  = s.notify_minutes;
             if (s.telegram_chat_id)  this.settingsTelegram = s.telegram_chat_id;
             if (s.notify_channel)    this.settingsChannel  = s.notify_channel;
+            if (s.locale)            this.settingsLocale   = s.locale;
             this.allUsers = Array.isArray(users) ? users : [];
+            const openId = parseInt(new URLSearchParams(location.search).get('todo') || '0', 10);
+            if (openId) {
+                const todo = await this.api('GET', 'todo', null, { id: openId });
+                if (!todo.error) await this.openDrawer(todo);
+                history.replaceState({}, '', location.pathname);
+            }
         },
 
         // ── API helper ────────────────────────────────────────
         async api(method, action, body = null, params = {}) {
             try {
                 const qs = new URLSearchParams({ action, ...params }).toString();
-                const opts = { method, headers: { 'X-Requested-With': 'XMLHttpRequest' } };
+                const opts = { method, headers: { 'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-Token': window.CSRF_TOKEN || '' } };
                 if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
                 const res = await fetch(`api.php?${qs}`, opts);
                 if (res.status === 401) { location.href = 'auth.php'; return { error: 'Unauthenticated' }; }
@@ -191,6 +230,7 @@ function todoApp() {
             this.loading = true;
             try {
                 const params = { status: this.filterStatus, sort: this.sortBy, dir: this.sortDir };
+                if (this.searchQuery.trim()) params.q = this.searchQuery.trim();
                 if (this.filterTagId) params.tag_id = this.filterTagId;
                 if (this.filterStatus === 'all' && this.hideCompleted) params.hide_completed = '1';
                 if (this.filterStatus === 'completed') {
@@ -212,10 +252,33 @@ function todoApp() {
         // ── Filters ───────────────────────────────────────────
         setStatus(s) {
             this.filterStatus = s;
+            this.sidebarOpen = false;
             this.loadTodos();
         },
         setTag(id) {
             this.filterTagId = (this.filterTagId === id) ? null : id;
+            this.sidebarOpen = false;
+            this.loadTodos();
+        },
+        filterTitle() {
+            if (this.filterTagId) {
+                const t = this.tags.find(x => x.id === this.filterTagId);
+                return t ? t.name : 'Tag';
+            }
+            return ({
+                all: this.t('nav.all_tasks'),
+                today: this.t('nav.today'),
+                pending: this.t('nav.pending'),
+                active: this.t('nav.active'),
+                completed: this.t('nav.completed'),
+            })[this.filterStatus] || this.t('nav.tasks');
+        },
+        onSearchInput() {
+            clearTimeout(this.searchTimer);
+            this.searchTimer = setTimeout(() => this.loadTodos(), 200);
+        },
+        clearSearch() {
+            this.searchQuery = '';
             this.loadTodos();
         },
         setSort(field) {
@@ -223,7 +286,7 @@ function todoApp() {
                 this.sortDir = this.sortDir === 'asc' ? 'desc' : 'asc';
             } else {
                 this.sortBy  = field;
-                this.sortDir = field === 'title' ? 'asc' : 'asc';
+                this.sortDir = (field === 'title' || field === 'priority') ? 'asc' : 'desc';
             }
             this.loadTodos();
         },
@@ -237,7 +300,7 @@ function todoApp() {
             this.form = {
                 title: '', active_date: '', active_time: '', tag_ids: [],
                 recur_type: '', recur_interval: 1, recur_days: [], recur_ends_at: '',
-                share_emails: [],
+                share_emails: [], priority: 4, parent_id: null,
             };
             this.formError     = '';
             this.showTagForm   = false;
@@ -257,6 +320,8 @@ function todoApp() {
                 recur_days:     todo.recur_days ? JSON.parse(todo.recur_days) : [],
                 recur_ends_at:  todo.recur_ends_at ? todo.recur_ends_at.slice(0,16) : '',
                 share_emails:   [],
+                priority:       todo.priority || 4,
+                parent_id:      todo.parent_id || null,
             };
             this.formError     = '';
             this.showTagForm   = false;
@@ -277,7 +342,7 @@ function todoApp() {
         },
 
         async saveForm() {
-            if (!this.form.title.trim()) { this.formError = 'Title is required.'; return; }
+            if (!this.form.title.trim()) { this.formError = this.t('form.title_required'); return; }
             this.savingForm = true;
             this.formError  = '';
             const isCreate  = this.modal === 'create';
@@ -305,18 +370,18 @@ function todoApp() {
                 const at  = result.active_at ? new Date(result.active_at.replace(' ', 'T')) : null;
                 const now = new Date();
                 const sharedNote = this.form.share_emails.length && !shareErrors.length
-                    ? ` Shared with ${this.form.share_emails.length}.` : '';
+                    ? this.t('toast.shared_n', { n: this.form.share_emails.length }) : '';
                 const shareFailNote = shareErrors.length
-                    ? ` Share failed for: ${shareErrors.join(', ')}.` : '';
+                    ? this.t('toast.share_fail', { emails: shareErrors.join(', ') }) : '';
 
                 if (at && at <= now && !result.completed_at && this.filterStatus === 'pending') {
                     this.filterStatus = 'active';
-                    this.toast((isCreate ? 'Created' : 'Saved') + ' — visible in Active now.' + sharedNote + shareFailNote);
+                    this.toast((isCreate ? this.t('toast.created_active') : this.t('toast.saved_active')) + sharedNote + shareFailNote);
                 } else if (result.completed_at && this.filterStatus !== 'completed') {
                     this.filterStatus = 'completed';
-                    this.toast('Saved — visible in Completed.' + sharedNote + shareFailNote);
+                    this.toast(this.t('toast.saved_completed') + sharedNote + shareFailNote);
                 } else {
-                    this.toast((isCreate ? 'Created.' : 'Saved.') + sharedNote + shareFailNote);
+                    this.toast((isCreate ? this.t('toast.created') : this.t('toast.saved')) + sharedNote + shareFailNote);
                 }
 
                 await this.loadTodos();
@@ -333,7 +398,7 @@ function todoApp() {
                 this.tags.push(tag);
                 this.form.tag_ids.push(tag.id);
                 this.newTagName  = '';
-                this.newTagColor = '#6366f1';
+                this.newTagColor = '#5b4dff';
                 this.showTagForm = false;
             }
         },
@@ -343,11 +408,14 @@ function todoApp() {
             this.drawer      = todo;
             this.drawerTab   = 'comments';
             this.newComment  = '';
+            this.newSubtask  = '';
             this.shareEmail  = '';
             this.shareError  = '';
             this.uploadError = '';
             this.files       = [];
             this.editing     = false;
+            const full = await this.api('GET', 'todo', null, { id: todo.id });
+            if (!full.error) this.drawer = full;
             await this.loadDrawerData(todo.id);
         },
         closeDrawer() { this.drawer = null; },
@@ -376,7 +444,7 @@ function todoApp() {
             try {
                 const res = await fetch('api.php?action=upload_file', {
                     method: 'POST',
-                    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                    headers: { 'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-Token': window.CSRF_TOKEN || '' },
                     body: fd,
                 });
                 const result = await res.json();
@@ -392,7 +460,7 @@ function todoApp() {
         },
 
         async deleteFile(id) {
-            if (!confirm('Delete this file?')) return;
+            if (!confirm(this.t('files.delete_confirm'))) return;
             const r = await this.api('POST', 'delete_file', { id });
             if (!r.error) this.files = this.files.filter(f => f.id !== id);
         },
@@ -447,31 +515,96 @@ function todoApp() {
         },
 
         // ── Complete / Delete ─────────────────────────────────
-        async completeTodo(todo, e) {
+        async addSubtask() {
+            const title = (this.newSubtask || '').trim();
+            if (!title || !this.drawer) return;
+            const r = await this.api('POST', 'create_todo', {
+                title,
+                parent_id: this.drawer.id,
+                priority: this.drawer.priority || 4,
+            });
+            if (r.error) { this.toast(r.error); return; }
+            this.newSubtask = '';
+            const full = await this.api('GET', 'todo', null, { id: this.drawer.id });
+            if (!full.error) this.drawer = full;
+            await this.loadTodos();
+        },
+
+        async toggleComplete(todo, e) {
+            e.preventDefault();
             e.stopPropagation();
-            const result = await this.api('POST', 'complete_todo', { id: todo.id });
-            if (result.error) return;
-            if (result.next_todo) {
-                this.todos = this.todos.map(t => t.id === todo.id ? result.next_todo : t);
-                this.toast('Done — next occurrence scheduled.');
+            if (!todo.is_owner) return;
+            if (todo.completed_at) {
+                const result = await this.api('POST', 'uncomplete_todo', { id: todo.id });
+                if (result.error) { this.toast(result.error); return; }
+                this.clearUndo();
+                this.toast(this.t('toast.incomplete'));
             } else {
-                this.todos = this.todos.filter(t => t.id !== todo.id);
-                this.toast('Completed.');
+                this.leavingId = todo.id;
+                const prev = todo.completed_at;
+                todo.completed_at = new Date().toISOString().slice(0, 19).replace('T', ' ');
+                const [result] = await Promise.all([
+                    this.api('POST', 'complete_todo', { id: todo.id }),
+                    this.sleep(280),
+                ]);
+                if (result.error) {
+                    todo.completed_at = prev;
+                    this.leavingId = null;
+                    this.toast(result.error);
+                    return;
+                }
+                this.offerUndo(todo.id, result.next_todo);
+                this.toast(result.next_todo ? this.t('toast.next') : this.t('toast.completed'), 10000, true);
             }
             if (this.drawer?.id === todo.id) this.closeDrawer();
+            await this.loadTodos();
+            this.leavingId = null;
+            if (this.drawer) {
+                const full = await this.api('GET', 'todo', null, { id: this.drawer.id });
+                if (!full.error) this.drawer = full;
+            }
+        },
+
+        offerUndo(id, nextTodo) {
+            this.undoId = id;
+            this.undoNextId = nextTodo && nextTodo.id ? nextTodo.id : null;
+        },
+        clearUndo() {
+            this.undoId = null;
+            this.undoNextId = null;
+        },
+        async undoComplete() {
+            const id = this.undoId;
+            const nextId = this.undoNextId;
+            if (!id) return;
+            this.clearUndo();
+            this.toastMsg = '';
+            clearTimeout(this.toastTimer);
+            if (nextId) await this.api('POST', 'delete_todo', { id: nextId });
+            const result = await this.api('POST', 'uncomplete_todo', { id });
+            if (result.error) { this.toast(result.error); return; }
+            this.toast(this.t('toast.restored'));
+            await this.loadTodos();
+            if (this.drawer) {
+                const full = await this.api('GET', 'todo', null, { id: this.drawer.id });
+                if (!full.error) this.drawer = full;
+            }
+        },
+        sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
         },
 
         async deleteTodo(id) {
-            if (!confirm('Delete this todo?')) return;
+            if (!confirm(this.t('confirm.delete_todo'))) return;
             await this.api('POST', 'delete_todo', { id });
             this.todos = this.todos.filter(t => t.id !== id);
             if (this.drawer?.id === id) this.closeDrawer();
-            this.toast('Deleted.');
+            this.toast(this.t('toast.deleted'));
         },
 
         // ── Tags management ───────────────────────────────────
         async deleteTag(id) {
-            if (!confirm('Delete this tag? It will be removed from all todos.')) return;
+            if (!confirm(this.t('confirm.delete_tag'))) return;
             await this.api('POST', 'delete_tag', { id });
             this.tags = this.tags.filter(t => t.id !== id);
             if (this.filterTagId === id) { this.filterTagId = null; }
@@ -485,14 +618,19 @@ function todoApp() {
                 notify_minutes:    parseInt(this.settingsMinutes),
                 telegram_chat_id:  this.settingsTelegram.trim(),
                 notify_channel:    this.settingsChannel,
+                locale:            this.settingsLocale,
             });
             if (r.error) { this.settingsError = r.error; return; }
-            this.toast('Settings saved.');
+            if (this.settingsLocale && this.settingsLocale !== window.LOCALE) {
+                location.reload();
+                return;
+            }
+            this.toast(this.t('settings.saved'));
         },
 
         async changePassword() {
             this.pwError = ''; this.pwOk = false;
-            if (this.pwNew !== this.pwNew2) { this.pwError = 'Passwords do not match.'; return; }
+            if (this.pwNew !== this.pwNew2) { this.pwError = this.t('auth.password_mismatch'); return; }
             const r = await this.api('POST', 'change_password', { current: this.pwCurrent, new: this.pwNew });
             if (r.error) { this.pwError = r.error; return; }
             this.pwCurrent = this.pwNew = this.pwNew2 = '';
@@ -505,10 +643,14 @@ function todoApp() {
         },
 
         // ── Helpers ───────────────────────────────────────────
-        toast(msg) {
+        toast(msg, ms = 3000, keepUndo = false) {
             this.toastMsg = msg;
+            if (!keepUndo) this.clearUndo();
             clearTimeout(this.toastTimer);
-            this.toastTimer = setTimeout(() => { this.toastMsg = ''; }, 3000);
+            this.toastTimer = setTimeout(() => {
+                this.toastMsg = '';
+                this.clearUndo();
+            }, ms);
         },
 
         formatDate(dt) {
@@ -516,38 +658,34 @@ function todoApp() {
             const d = new Date(dt.replace(' ', 'T'));
             const now = new Date();
             const diff = d - now;
-            if (diff < 0 && diff > -86400000) return 'Active now';
-            const opts = { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' };
-            if (d.getFullYear() !== now.getFullYear()) opts.year = 'numeric';
-            return d.toLocaleDateString('en-US', opts);
+            if (diff < 0 && diff > -86400000) return this.t('date.active_now');
+            return formatFixedDate(d, true);
         },
 
         formatDateShort(dt) {
             if (!dt) return '—';
-            return new Date(dt.replace(' ', 'T')).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+            return formatFixedDate(new Date(dt.replace(' ', 'T')), true);
         },
 
         recurLabel(todo) {
             if (!todo.recur_type) return '';
-            const map = { daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly', custom: `Every ${todo.recur_interval}d` };
-            return map[todo.recur_type] || '';
+            if (todo.recur_type === 'custom') return this.t('recur.custom', { n: todo.recur_interval });
+            return this.t('recur.' + todo.recur_type) || '';
         },
 
-        // Called on every title input — strips <datetime> and <+email> tags, fills fields
+        // Only opt-in tokens: <datetime>, <+email>, #tag, p1–p4. Never rewrite free text.
         parseTagsInTitle() {
             const re = /<(\+?)([^>]+)>/g;
             let newTitle = this.form.title;
             let match;
             while ((match = re.exec(this.form.title)) !== null) {
                 if (match[1] === '+') {
-                    // Share tag: <+email>
                     const email = match[2].trim();
                     if (email && !this.form.share_emails.includes(email)) {
                         this.form.share_emails.push(email);
                     }
                     newTitle = newTitle.replace(match[0], '').replace(/  +/g, ' ').trim();
                 } else {
-                    // Datetime tag
                     const parsed = parseDateTag(match[2]);
                     if (parsed) {
                         if (parsed.date) this.form.active_date = parsed.date;
@@ -556,6 +694,13 @@ function todoApp() {
                     }
                 }
             }
+
+            const pri = newTitle.match(/(?:^|\s)p([1-4])(?=\s|$)/i);
+            if (pri) {
+                this.form.priority = parseInt(pri[1], 10);
+                newTitle = newTitle.replace(/(?:^|\s)p[1-4](?=\s|$)/gi, ' ').replace(/\s+/g, ' ').trim();
+            }
+
             if (newTitle !== this.form.title) this.form.title = newTitle;
             this.updateShareDropdown();
             this.updateTagDropdown();
@@ -644,7 +789,7 @@ function todoApp() {
             return `${candidate.getFullYear()}-${p(candidate.getMonth()+1)}-${p(candidate.getDate())} ${p(h)}:${p(m)}:00`;
         },
 
-        dayLabel(n) { return DAYS[n]; },
+        dayLabel(n) { return this.t('day.' + n); },
         colors() { return COLORS; },
         days() { return [0,1,2,3,4,5,6]; },
 

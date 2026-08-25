@@ -10,8 +10,8 @@ A lightweight, self-hosted todo/task management web app built with PHP, SQLite, 
 - **Task sharing** — share individual todos with other registered users
 - **Comments** — leave notes on tasks
 - **File attachments** — upload and download files per task
-- **Email notifications** — get notified before a task activates, via SMTP or PHP `mail()`
-- **User accounts** — registration, login, password change
+- **Email and Telegram notifications** — get notified before a task activates, via SMTP, PHP `mail()`, or a Telegram bot
+- **User accounts** — registration (can be locked after the first user), login, password change
 - **Inline date parsing** — type `<friday 18:00>` in a title to set the activation time naturally
 - **Inline sharing** — type `<+email>` in a title to share a task while creating it
 
@@ -27,10 +27,10 @@ A lightweight, self-hosted todo/task management web app built with PHP, SQLite, 
 See [DEPLOY.md](DEPLOY.md) for full deployment instructions. Quick start:
 
 1. Copy the project to your webroot
-2. Copy `config.php` and fill in your `APP_URL` and SMTP credentials
+2. Edit `config.php` — `APP_URL`, SMTP, optional Telegram bot token
 3. Make `db/` and `uploads/` writable by the web server
 4. Set up a cron job: `* * * * * php /path/to/todo-app/cron.php`
-5. Visit the URL and register your first account
+5. Visit the URL, register your first account, then set `ALLOW_REGISTRATION` to `false`
 
 ## Project Structure
 
@@ -38,11 +38,12 @@ See [DEPLOY.md](DEPLOY.md) for full deployment instructions. Quick start:
 todo-app/
 ├── index.php        # Main UI
 ├── api.php          # JSON API (all data operations)
+├── app.php          # Shared kernel (DB, mail, session, CSRF)
 ├── auth.php         # Login / registration
 ├── cron.php         # Notification cron job
 ├── download.php     # Auth-gated file downloads
-├── config.php       # App configuration (copy & edit this)
-├── db/              # SQLite database (auto-created)
+├── config.php       # App configuration (edit this)
+├── db/              # SQLite database (auto-created; not web-accessible)
 ├── uploads/         # File attachments (auto-created per user/task)
 ├── css/app.css      # Custom styles
 └── js/app.js        # Alpine.js app logic

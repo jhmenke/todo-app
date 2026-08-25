@@ -2,28 +2,38 @@
 // Catch fatal errors (missing extensions, etc.) and return JSON instead of empty 500
 register_shutdown_function(function () {
     $e = error_get_last();
-    if ($e && in_array($e['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR])) {
+    if ($e && in_array($e['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
+        error_log($e['message'] . ' in ' . $e['file'] . ':' . $e['line']);
         if (!headers_sent()) {
             http_response_code(500);
             header('Content-Type: application/json');
         }
-        echo json_encode(['error' => 'PHP fatal: ' . $e['message'], 'file' => basename($e['file']), 'line' => $e['line']]);
+        echo json_encode(['error' => 'Server error']);
     }
 });
 
 require_once __DIR__ . '/app.php';
 
-if (session_status() === PHP_SESSION_NONE) session_start();
+start_session();
 
 header('Content-Type: application/json');
 
 try {
 
-// Auth check for all actions except logout
 $user   = session_user();
 $action = $_GET['action'] ?? ($_POST['action'] ?? '');
+$method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
-if (!$user) { json_out(['error' => 'Unauthenticated'], 401); }
+if (!$user) { json_out(['error' => t('error.unauthenticated')], 401); }
+
+$read_actions = ['todos','todo','tags','comments','shares','get_users','find_user','settings','get_files'];
+if (!in_array($action, $read_actions, true) && $method !== 'POST') {
+    json_out(['error' => t('error.method')], 405);
+}
+
+if ($method === 'POST' && !csrf_verify()) {
+    json_out(['error' => t('error.csrf')], 403);
+}
 
 $uid = (int)$user['id'];
 $body = json_in();
@@ -55,19 +65,21 @@ match ($action) {
     'get_files'       => get_files($uid),
     'upload_file'     => upload_file($uid),
     'delete_file'     => delete_file($uid, $body),
-    default           => json_out(['error' => 'Unknown action'], 400),
+    default           => json_out(['error' => t('error.unknown')], 400),
 };
 
 } catch (Throwable $e) {
-    json_out(['error' => $e->getMessage(), 'file' => basename($e->getFile()), 'line' => $e->getLine()], 500);
+    error_log($e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
+    json_out(['error' => t('error.server')], 500);
 }
 
 // ─── Todos ────────────────────────────────────────────────────
 function get_todos(int $uid): never {
     $tag_id = isset($_GET['tag_id']) && $_GET['tag_id'] !== '' ? (int)$_GET['tag_id'] : null;
     $status = $_GET['status'] ?? 'pending';
-    $sort   = in_array($_GET['sort'] ?? '', ['active_at','created_at','title','completed_at']) ? $_GET['sort'] : 'active_at';
+    $sort   = in_array($_GET['sort'] ?? '', ['active_at','created_at','title','completed_at','priority']) ? $_GET['sort'] : 'active_at';
     $dir    = ($_GET['dir'] ?? 'asc') === 'desc' ? 'DESC' : 'ASC';
+    $q      = trim((string)($_GET['q'] ?? ''));
 
     $where  = ['(t.user_id = :uid OR EXISTS (SELECT 1 FROM todo_shares ts WHERE ts.todo_id = t.id AND ts.user_id = :uid))'];
     $params = [':uid' => $uid];
@@ -76,16 +88,16 @@ function get_todos(int $uid): never {
         $where[] = 't.completed_at IS NULL AND (t.active_at IS NULL OR t.active_at > datetime("now", "localtime"))';
     } elseif ($status === 'active') {
         $where[] = 't.completed_at IS NULL AND t.active_at IS NOT NULL AND t.active_at <= datetime("now", "localtime")';
+    } elseif ($status === 'today') {
+        $where[] = 't.completed_at IS NULL AND t.active_at IS NOT NULL AND date(t.active_at) <= date("now", "localtime")';
     } elseif ($status === 'completed') {
         $where[] = 't.completed_at IS NOT NULL';
     }
 
-    // Hide completed toggle (used in "all" view)
     if (($_GET['hide_completed'] ?? '0') === '1') {
         $where[] = 't.completed_at IS NULL';
     }
 
-    // Completion date range (used in "completed" view)
     if ($status === 'completed') {
         if (!empty($_GET['completed_from'])) {
             $from = DateTime::createFromFormat('Y-m-d', $_GET['completed_from']);
@@ -102,50 +114,55 @@ function get_todos(int $uid): never {
         $params[':tag_id'] = $tag_id;
     }
 
-    $null_last = '';
-    if ($sort === 'active_at')    $null_last = "CASE WHEN t.active_at IS NULL THEN 1 ELSE 0 END, ";
-    elseif ($sort === 'completed_at') $null_last = "CASE WHEN t.completed_at IS NULL THEN 1 ELSE 0 END, ";
-    $sql = "
-        SELECT t.*,
-               u.email AS owner_email,
-               (t.user_id = :uid) AS is_owner,
-               (SELECT COUNT(*) FROM comments c WHERE c.todo_id = t.id) AS comment_count,
-               GROUP_CONCAT(tg.id || '|' || tg.name || '|' || tg.color, ';;') AS tags_raw
-        FROM todos t
-        JOIN users u ON u.id = t.user_id
-        LEFT JOIN todo_tags tt ON tt.todo_id = t.id
-        LEFT JOIN tags tg ON tg.id = tt.tag_id
+    if ($q !== '') {
+        $where[] = 't.title LIKE :q ESCAPE \'\\\'';
+        $params[':q'] = '%' . like_escape($q) . '%';
+    }
+
+    $order = todo_order_sql($sort, $dir);
+    $sql = todo_select_sql() . "
         WHERE " . implode(' AND ', $where) . "
         GROUP BY t.id
-        ORDER BY {$null_last}t.{$sort} {$dir}
+        ORDER BY {$order}
     ";
 
     $stmt = db()->prepare($sql);
     $stmt->execute($params);
-    $rows = $stmt->fetchAll();
-    json_out(array_map('format_todo', $rows));
+    $matched = array_map('format_todo', $stmt->fetchAll());
+
+    json_out(nest_todos($uid, $matched));
 }
 
 function get_todo(int $uid): never {
     $id = (int)($_GET['id'] ?? 0);
     $todo = fetch_todo($uid, $id);
-    if (!$todo) json_out(['error' => 'Not found'], 404);
+    if (!$todo) json_out(['error' => t('error.not_found')], 404);
     json_out($todo);
 }
 
 function create_todo(int $uid, array $b): never {
     $title = trim($b['title'] ?? '');
-    if ($title === '') json_out(['error' => 'Title required'], 422);
+    if ($title === '') json_out(['error' => t('error.title_required')], 422);
 
     $active_at      = parse_datetime($b['active_at'] ?? '');
     $recur_type     = in_array($b['recur_type'] ?? '', ['daily','weekly','monthly','custom']) ? $b['recur_type'] : null;
     $recur_interval = max(1, (int)($b['recur_interval'] ?? 1));
     $recur_days     = ($recur_type === 'weekly' && !empty($b['recur_days'])) ? json_encode($b['recur_days']) : null;
     $recur_ends_at  = parse_datetime($b['recur_ends_at'] ?? '');
-    $parent_id      = isset($b['recur_parent_id']) ? (int)$b['recur_parent_id'] : null;
+    $recur_parent   = isset($b['recur_parent_id']) ? (int)$b['recur_parent_id'] : null;
+    $priority       = clamp_priority($b['priority'] ?? 4);
+    $parent_id      = isset($b['parent_id']) && $b['parent_id'] !== '' && $b['parent_id'] !== null ? (int)$b['parent_id'] : null;
 
-    $stmt = db()->prepare('INSERT INTO todos (user_id,title,active_at,recur_type,recur_interval,recur_days,recur_ends_at,recur_parent_id) VALUES (?,?,?,?,?,?,?,?)');
-    $stmt->execute([$uid, $title, $active_at, $recur_type, $recur_interval, $recur_days, $recur_ends_at, $parent_id]);
+    if ($parent_id) {
+        $parent = fetch_todo_raw($uid, $parent_id);
+        if (!$parent || !$parent['is_owner']) json_out(['error' => t('error.parent')], 403);
+        if (!empty($parent['parent_id'])) json_out(['error' => t('error.nest')], 422);
+        $recur_type = $recur_days = $recur_ends_at = $recur_parent = null;
+        $recur_interval = 1;
+    }
+
+    $stmt = db()->prepare('INSERT INTO todos (user_id,title,active_at,recur_type,recur_interval,recur_days,recur_ends_at,recur_parent_id,priority,parent_id) VALUES (?,?,?,?,?,?,?,?,?,?)');
+    $stmt->execute([$uid, $title, $active_at, $recur_type, $recur_interval, $recur_days, $recur_ends_at, $recur_parent, $priority, $parent_id]);
     $todo_id = (int)db()->lastInsertId();
 
     sync_tags($todo_id, $uid, $b['tag_ids'] ?? []);
@@ -155,7 +172,7 @@ function create_todo(int $uid, array $b): never {
 function update_todo(int $uid, array $b): never {
     $id   = (int)($b['id'] ?? 0);
     $todo = fetch_todo_raw($uid, $id);
-    if (!$todo || !$todo['is_owner']) json_out(['error' => 'Not found or not owner'], 403);
+    if (!$todo || !$todo['is_owner']) json_out(['error' => t('error.not_owner')], 403);
 
     $title          = trim($b['title'] ?? $todo['title']);
     $active_at      = array_key_exists('active_at', $b) ? parse_datetime($b['active_at']) : $todo['active_at'];
@@ -163,9 +180,15 @@ function update_todo(int $uid, array $b): never {
     $recur_interval = max(1, (int)($b['recur_interval'] ?? $todo['recur_interval']));
     $recur_days     = ($recur_type === 'weekly') ? json_encode($b['recur_days'] ?? json_decode($todo['recur_days'] ?? '[]', true)) : null;
     $recur_ends_at  = array_key_exists('recur_ends_at', $b) ? parse_datetime($b['recur_ends_at']) : $todo['recur_ends_at'];
+    $priority       = array_key_exists('priority', $b) ? clamp_priority($b['priority'], (int)($todo['priority'] ?? 4)) : clamp_priority($todo['priority'] ?? 4);
 
-    db()->prepare('UPDATE todos SET title=?,active_at=?,recur_type=?,recur_interval=?,recur_days=?,recur_ends_at=? WHERE id=?')
-        ->execute([$title, $active_at, $recur_type, $recur_interval, $recur_days, $recur_ends_at, $id]);
+    if (!empty($todo['parent_id'])) {
+        $recur_type = $recur_days = $recur_ends_at = null;
+        $recur_interval = 1;
+    }
+
+    db()->prepare('UPDATE todos SET title=?,active_at=?,recur_type=?,recur_interval=?,recur_days=?,recur_ends_at=?,priority=? WHERE id=?')
+        ->execute([$title, $active_at, $recur_type, $recur_interval, $recur_days, $recur_ends_at, $priority, $id]);
 
     sync_tags($id, $uid, $b['tag_ids'] ?? null);
     json_out(fetch_todo($uid, $id));
@@ -174,7 +197,13 @@ function update_todo(int $uid, array $b): never {
 function delete_todo(int $uid, array $b): never {
     $id   = (int)($b['id'] ?? 0);
     $todo = fetch_todo_raw($uid, $id);
-    if (!$todo || !$todo['is_owner']) json_out(['error' => 'Not found or not owner'], 403);
+    if (!$todo || !$todo['is_owner']) json_out(['error' => t('error.not_owner')], 403);
+    $kids = db()->prepare('SELECT id FROM todos WHERE parent_id=?');
+    $kids->execute([$id]);
+    foreach ($kids as $kid) {
+        delete_todo_uploads((int)$kid['id']);
+    }
+    delete_todo_uploads($id);
     db()->prepare('DELETE FROM todos WHERE id=?')->execute([$id]);
     json_out(['ok' => true]);
 }
@@ -182,7 +211,11 @@ function delete_todo(int $uid, array $b): never {
 function complete_todo(int $uid, array $b): never {
     $id   = (int)($b['id'] ?? 0);
     $todo = fetch_todo_raw($uid, $id);
-    if (!$todo || !$todo['is_owner']) json_out(['error' => 'Not found or not owner'], 403);
+    if (!$todo || !$todo['is_owner']) json_out(['error' => t('error.not_owner')], 403);
+
+    if (!empty($todo['completed_at'])) {
+        json_out(['completed' => true, 'next_todo' => null]);
+    }
 
     db()->prepare('UPDATE todos SET completed_at=datetime("now","localtime") WHERE id=?')->execute([$id]);
 
@@ -198,7 +231,7 @@ function complete_todo(int $uid, array $b): never {
 function uncomplete_todo(int $uid, array $b): never {
     $id   = (int)($b['id'] ?? 0);
     $todo = fetch_todo_raw($uid, $id);
-    if (!$todo || !$todo['is_owner']) json_out(['error' => 'Not found or not owner'], 403);
+    if (!$todo || !$todo['is_owner']) json_out(['error' => t('error.not_owner')], 403);
     db()->prepare('UPDATE todos SET completed_at=NULL WHERE id=?')->execute([$id]);
     json_out(fetch_todo($uid, $id));
 }
@@ -213,7 +246,7 @@ function get_tags(int $uid): never {
 function create_tag(int $uid, array $b): never {
     $name  = trim($b['name'] ?? '');
     $color = $b['color'] ?? '#6366f1';
-    if ($name === '') json_out(['error' => 'Name required'], 422);
+    if ($name === '') json_out(['error' => t('error.name_required')], 422);
     $stmt = db()->prepare('INSERT INTO tags (user_id,name,color) VALUES (?,?,?)');
     $stmt->execute([$uid, $name, $color]);
     $id = db()->lastInsertId();
@@ -224,7 +257,7 @@ function update_tag(int $uid, array $b): never {
     $id    = (int)($b['id'] ?? 0);
     $name  = trim($b['name'] ?? '');
     $color = $b['color'] ?? '#6366f1';
-    if ($name === '') json_out(['error' => 'Name required'], 422);
+    if ($name === '') json_out(['error' => t('error.name_required')], 422);
     $stmt = db()->prepare('UPDATE tags SET name=?, color=? WHERE id=? AND user_id=?');
     $stmt->execute([$name, $color, $id, $uid]);
     json_out(['id' => $id, 'user_id' => $uid, 'name' => $name, 'color' => $color]);
@@ -239,7 +272,7 @@ function delete_tag(int $uid, array $b): never {
 // ─── Comments ─────────────────────────────────────────────────
 function get_comments(int $uid): never {
     $todo_id = (int)($_GET['todo_id'] ?? 0);
-    if (!can_access_todo($uid, $todo_id)) json_out(['error' => 'Not found'], 404);
+    if (!can_access_todo($uid, $todo_id)) json_out(['error' => t('error.not_found')], 404);
     $stmt = db()->prepare('SELECT c.*, u.email FROM comments c JOIN users u ON u.id=c.user_id WHERE c.todo_id=? ORDER BY c.created_at ASC');
     $stmt->execute([$todo_id]);
     json_out($stmt->fetchAll());
@@ -248,8 +281,8 @@ function get_comments(int $uid): never {
 function add_comment(int $uid, array $b): never {
     $todo_id = (int)($b['todo_id'] ?? 0);
     $body    = trim($b['body'] ?? '');
-    if (!can_access_todo($uid, $todo_id)) json_out(['error' => 'Not found'], 404);
-    if ($body === '') json_out(['error' => 'Comment cannot be empty'], 422);
+    if (!can_access_todo($uid, $todo_id)) json_out(['error' => t('error.not_found')], 404);
+    if ($body === '') json_out(['error' => t('error.comment_empty')], 422);
     $stmt = db()->prepare('INSERT INTO comments (todo_id,user_id,body) VALUES (?,?,?)');
     $stmt->execute([$todo_id, $uid, $body]);
     $id = db()->lastInsertId();
@@ -262,7 +295,7 @@ function add_comment(int $uid, array $b): never {
 function get_shares(int $uid): never {
     $todo_id = (int)($_GET['todo_id'] ?? 0);
     $todo    = fetch_todo_raw($uid, $todo_id);
-    if (!$todo || !$todo['is_owner']) json_out(['error' => 'Not found'], 404);
+    if (!$todo || !$todo['is_owner']) json_out(['error' => t('error.not_found')], 404);
     $stmt = db()->prepare('SELECT ts.user_id, u.email, ts.shared_at FROM todo_shares ts JOIN users u ON u.id=ts.user_id WHERE ts.todo_id=?');
     $stmt->execute([$todo_id]);
     json_out($stmt->fetchAll());
@@ -272,18 +305,18 @@ function add_share(int $uid, array $b): never {
     $todo_id = (int)($b['todo_id'] ?? 0);
     $email   = trim($b['email'] ?? '');
     $todo    = fetch_todo_raw($uid, $todo_id);
-    if (!$todo || !$todo['is_owner']) json_out(['error' => 'Not found or not owner'], 403);
+    if (!$todo || !$todo['is_owner']) json_out(['error' => t('error.not_owner')], 403);
 
     $stmt = db()->prepare('SELECT id, email FROM users WHERE email=?');
     $stmt->execute([$email]);
     $target = $stmt->fetch();
-    if (!$target) json_out(['error' => 'No account found for that email'], 404);
-    if ($target['id'] === $uid) json_out(['error' => 'Cannot share with yourself'], 422);
+    if (!$target) json_out(['error' => t('error.no_account')], 404);
+    if ($target['id'] === $uid) json_out(['error' => t('error.share_self')], 422);
 
     try {
         db()->prepare('INSERT INTO todo_shares (todo_id, user_id) VALUES (?,?)')->execute([$todo_id, $target['id']]);
     } catch (PDOException) {
-        json_out(['error' => 'Already shared with this user'], 422);
+        json_out(['error' => t('error.already_shared')], 422);
     }
     json_out(['user_id' => $target['id'], 'email' => $target['email'], 'shared_at' => date('Y-m-d H:i:s')]);
 }
@@ -292,7 +325,7 @@ function remove_share(int $uid, array $b): never {
     $todo_id    = (int)($b['todo_id'] ?? 0);
     $share_uid  = (int)($b['user_id'] ?? 0);
     $todo       = fetch_todo_raw($uid, $todo_id);
-    if (!$todo || !$todo['is_owner']) json_out(['error' => 'Not found or not owner'], 403);
+    if (!$todo || !$todo['is_owner']) json_out(['error' => t('error.not_owner')], 403);
     db()->prepare('DELETE FROM todo_shares WHERE todo_id=? AND user_id=?')->execute([$todo_id, $share_uid]);
     json_out(['ok' => true]);
 }
@@ -308,13 +341,13 @@ function find_user(int $uid): never {
     $stmt  = db()->prepare('SELECT id, email FROM users WHERE email=? AND id != ?');
     $stmt->execute([$email, $uid]);
     $u = $stmt->fetch();
-    if (!$u) json_out(['error' => 'Not found'], 404);
+    if (!$u) json_out(['error' => t('error.not_found')], 404);
     json_out($u);
 }
 
 // ─── Settings ─────────────────────────────────────────────────
 function get_settings(int $uid): never {
-    $stmt = db()->prepare('SELECT id, email, notify_minutes, telegram_chat_id, notify_channel FROM users WHERE id=?');
+    $stmt = db()->prepare('SELECT id, email, notify_minutes, telegram_chat_id, notify_channel, locale FROM users WHERE id=?');
     $stmt->execute([$uid]);
     json_out($stmt->fetch());
 }
@@ -323,22 +356,24 @@ function update_settings(int $uid, array $b): never {
     $minutes  = max(1, min(1440, (int)($b['notify_minutes'] ?? 5)));
     $tg       = trim($b['telegram_chat_id'] ?? '');
     $channel  = in_array($b['notify_channel'] ?? '', ['telegram','email','both']) ? $b['notify_channel'] : 'telegram';
-    db()->prepare('UPDATE users SET notify_minutes=?, telegram_chat_id=?, notify_channel=? WHERE id=?')
-        ->execute([$minutes, $tg ?: null, $channel, $uid]);
+    $locale   = normalize_locale($b['locale'] ?? current_locale());
+    db()->prepare('UPDATE users SET notify_minutes=?, telegram_chat_id=?, notify_channel=?, locale=? WHERE id=?')
+        ->execute([$minutes, $tg ?: null, $channel, $locale, $uid]);
     $_SESSION['user']['notify_minutes'] = $minutes;
-    json_out(['ok' => true, 'notify_minutes' => $minutes]);
+    set_locale($locale);
+    json_out(['ok' => true, 'notify_minutes' => $minutes, 'locale' => $locale]);
 }
 
 function change_password(int $uid, array $b): never {
     $current = $b['current'] ?? '';
     $new     = $b['new'] ?? '';
-    if (strlen($new) < 8) json_out(['error' => 'Password must be at least 8 characters'], 422);
+    if (strlen($new) < 8) json_out(['error' => t('error.password_short')], 422);
 
     $stmt = db()->prepare('SELECT password_hash FROM users WHERE id=?');
     $stmt->execute([$uid]);
     $row = $stmt->fetch();
     if (!$row || !password_verify($current, $row['password_hash'])) {
-        json_out(['error' => 'Current password is incorrect'], 403);
+        json_out(['error' => t('error.password_wrong')], 403);
     }
     $hash = password_hash($new, PASSWORD_DEFAULT);
     db()->prepare('UPDATE users SET password_hash=? WHERE id=?')->execute([$hash, $uid]);
@@ -351,6 +386,122 @@ function logout(): never {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────
+function clamp_priority(mixed $v, int $default = 4): int {
+    $p = (int) ($v ?? $default);
+    return max(1, min(4, $p ?: $default));
+}
+
+function like_escape(string $s): string {
+    return str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $s);
+}
+
+function todo_select_sql(): string {
+    return "
+        SELECT t.*,
+               u.email AS owner_email,
+               (t.user_id = :uid) AS is_owner,
+               (SELECT COUNT(*) FROM comments c WHERE c.todo_id = t.id) AS comment_count,
+               GROUP_CONCAT(tg.id || '|' || tg.name || '|' || tg.color, ';;') AS tags_raw
+        FROM todos t
+        JOIN users u ON u.id = t.user_id
+        LEFT JOIN todo_tags tt ON tt.todo_id = t.id
+        LEFT JOIN tags tg ON tg.id = tt.tag_id
+    ";
+}
+
+function todo_order_sql(string $sort, string $dir): string {
+    if ($sort === 'priority') {
+        return "t.priority ASC, CASE WHEN t.active_at IS NULL THEN 1 ELSE 0 END, t.active_at ASC";
+    }
+    $null_last = '';
+    if ($sort === 'active_at') $null_last = "CASE WHEN t.active_at IS NULL THEN 1 ELSE 0 END, ";
+    elseif ($sort === 'completed_at') $null_last = "CASE WHEN t.completed_at IS NULL THEN 1 ELSE 0 END, ";
+    return "{$null_last}t.{$sort} {$dir}";
+}
+
+function fetch_children(int $uid, int $parent_id): array {
+    $sql = todo_select_sql() . "
+        WHERE t.parent_id = :parent_id
+          AND (t.user_id = :uid OR EXISTS (SELECT 1 FROM todo_shares ts WHERE ts.todo_id = t.id AND ts.user_id = :uid))
+        GROUP BY t.id
+        ORDER BY t.completed_at IS NOT NULL, t.priority ASC, t.created_at ASC
+    ";
+    $stmt = db()->prepare($sql);
+    $stmt->execute([':uid' => $uid, ':parent_id' => $parent_id]);
+    $out = [];
+    foreach ($stmt as $row) {
+        $child = format_todo($row);
+        $child['children'] = [];
+        $out[] = $child;
+    }
+    return $out;
+}
+
+function nest_todos(int $uid, array $matched): array {
+    $by_id = [];
+    foreach ($matched as $t) {
+        $by_id[(int)$t['id']] = true;
+    }
+
+    $top_parent_ids = [];
+    foreach ($matched as $t) {
+        if (empty($t['parent_id'])) {
+            $top_parent_ids[] = (int)$t['id'];
+        }
+    }
+
+    $children_by_parent = [];
+    if ($top_parent_ids) {
+        $in = implode(',', array_map('intval', $top_parent_ids));
+        $sql = todo_select_sql() . "
+            WHERE t.parent_id IN ({$in})
+              AND (t.user_id = :uid OR EXISTS (SELECT 1 FROM todo_shares ts WHERE ts.todo_id = t.id AND ts.user_id = :uid))
+            GROUP BY t.id
+            ORDER BY t.completed_at IS NOT NULL, t.priority ASC, t.created_at ASC
+        ";
+        $stmt = db()->prepare($sql);
+        $stmt->execute([':uid' => $uid]);
+        foreach ($stmt as $row) {
+            $child = format_todo($row);
+            $child['children'] = [];
+            $children_by_parent[(int)$child['parent_id']][] = $child;
+        }
+    }
+
+    $parent_titles = [];
+    $need_titles = [];
+    foreach ($matched as $t) {
+        if (!empty($t['parent_id']) && empty($by_id[(int)$t['parent_id']])) {
+            $need_titles[(int)$t['parent_id']] = true;
+        }
+    }
+    if ($need_titles) {
+        $in = implode(',', array_map('intval', array_keys($need_titles)));
+        foreach (db()->query("SELECT id, title FROM todos WHERE id IN ({$in})") as $row) {
+            $parent_titles[(int)$row['id']] = $row['title'];
+        }
+    }
+
+    $out = [];
+    $emitted_child = [];
+    foreach ($matched as $t) {
+        $id = (int)$t['id'];
+        if (empty($t['parent_id'])) {
+            $t['children'] = $children_by_parent[$id] ?? [];
+            foreach ($t['children'] as $c) {
+                $emitted_child[(int)$c['id']] = true;
+            }
+            $out[] = $t;
+        } elseif (empty($by_id[(int)$t['parent_id']])) {
+            $t['parent_title'] = $parent_titles[(int)$t['parent_id']] ?? null;
+            $t['children'] = [];
+            $out[] = $t;
+            $emitted_child[$id] = true;
+        }
+    }
+    return $out;
+}
+
 function parse_datetime(string $s): ?string {
     if ($s === '') return null;
     $dt = DateTime::createFromFormat('Y-m-d\TH:i', $s)
@@ -362,6 +513,9 @@ function parse_datetime(string $s): ?string {
 function format_todo(array $row): array {
     $row['is_owner']      = (bool)$row['is_owner'];
     $row['comment_count'] = (int)$row['comment_count'];
+    $row['priority']      = clamp_priority($row['priority'] ?? 4);
+    $row['parent_id']     = isset($row['parent_id']) && $row['parent_id'] !== null && $row['parent_id'] !== '' ? (int)$row['parent_id'] : null;
+    $row['children']      = $row['children'] ?? [];
     $row['tags']          = [];
     if (!empty($row['tags_raw'])) {
         foreach (explode(';;', $row['tags_raw']) as $part) {
@@ -388,7 +542,15 @@ function fetch_todo(int $uid, int $id): ?array {
     ");
     $stmt->execute([':uid' => $uid, ':id' => $id]);
     $row = $stmt->fetch();
-    return $row ? format_todo($row) : null;
+    if (!$row) return null;
+    $todo = format_todo($row);
+    if (!empty($todo['parent_id'])) {
+        $p = db()->prepare('SELECT title FROM todos WHERE id=?');
+        $p->execute([$todo['parent_id']]);
+        $todo['parent_title'] = $p->fetchColumn() ?: null;
+    }
+    $todo['children'] = fetch_children($uid, (int)$todo['id']);
+    return $todo;
 }
 
 function fetch_todo_raw(int $uid, int $id): ?array {
@@ -398,12 +560,6 @@ function fetch_todo_raw(int $uid, int $id): ?array {
     ");
     $stmt->execute([$uid, $id, $uid, $uid]);
     return $stmt->fetch() ?: null;
-}
-
-function can_access_todo(int $uid, int $todo_id): bool {
-    $stmt = db()->prepare('SELECT 1 FROM todos WHERE id=? AND (user_id=? OR EXISTS (SELECT 1 FROM todo_shares ts WHERE ts.todo_id=todos.id AND ts.user_id=?))');
-    $stmt->execute([$todo_id, $uid, $uid]);
-    return (bool)$stmt->fetch();
 }
 
 function sync_tags(int $todo_id, int $uid, ?array $tag_ids): void {
@@ -443,9 +599,10 @@ function spawn_recurrence(int $uid, array $todo): ?array {
     $next_active = $active_at->format('Y-m-d H:i:s');
     if ($todo['recur_ends_at'] && $next_active > $todo['recur_ends_at']) return null;
 
-    $parent_id = $todo['recur_parent_id'] ?? $todo['id'];
-    $stmt = db()->prepare('INSERT INTO todos (user_id,title,active_at,recur_type,recur_interval,recur_days,recur_ends_at,recur_parent_id) VALUES (?,?,?,?,?,?,?,?)');
-    $stmt->execute([$uid, $todo['title'], $next_active, $recur_type, $todo['recur_interval'], $todo['recur_days'], $todo['recur_ends_at'], $parent_id]);
+    $recur_parent = $todo['recur_parent_id'] ?? $todo['id'];
+    $priority = clamp_priority($todo['priority'] ?? 4);
+    $stmt = db()->prepare('INSERT INTO todos (user_id,title,active_at,recur_type,recur_interval,recur_days,recur_ends_at,recur_parent_id,priority) VALUES (?,?,?,?,?,?,?,?,?)');
+    $stmt->execute([$uid, $todo['title'], $next_active, $recur_type, $todo['recur_interval'], $todo['recur_days'], $todo['recur_ends_at'], $recur_parent, $priority]);
     $new_id = (int)db()->lastInsertId();
 
     // Copy tags
@@ -462,7 +619,7 @@ function spawn_recurrence(int $uid, array $todo): ?array {
 // ─── Files ────────────────────────────────────────────────────
 function get_files(int $uid): never {
     $todo_id = (int)($_GET['todo_id'] ?? 0);
-    if (!can_access_todo($uid, $todo_id)) json_out(['error' => 'Not found'], 404);
+    if (!can_access_todo($uid, $todo_id)) json_out(['error' => t('error.not_found')], 404);
     $stmt = db()->prepare('SELECT f.*, u.email AS uploader_email FROM files f JOIN users u ON u.id = f.uploaded_by WHERE f.todo_id = ? ORDER BY f.created_at ASC');
     $stmt->execute([$todo_id]);
     json_out($stmt->fetchAll());
@@ -470,7 +627,7 @@ function get_files(int $uid): never {
 
 function upload_file(int $uid): never {
     $todo_id = (int)($_POST['todo_id'] ?? 0);
-    if (!can_access_todo($uid, $todo_id)) json_out(['error' => 'Not found'], 404);
+    if (!can_access_todo($uid, $todo_id)) json_out(['error' => t('error.not_found')], 404);
 
     if (empty($_FILES['file']) || $_FILES['file']['error'] !== UPLOAD_ERR_OK) {
         $codes = [1=>'File too large',2=>'File too large',3=>'Partial upload',4=>'No file sent',6=>'No temp dir',7=>'Cannot write',8=>'Extension blocked'];
@@ -478,28 +635,25 @@ function upload_file(int $uid): never {
         json_out(['error' => $msg], 422);
     }
 
-    $allowed_mime = [
-        'image/jpeg','image/png','image/gif','image/webp','image/svg+xml',
-        'application/pdf',
-        'text/plain','text/csv',
-        'application/msword',
-        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        'application/vnd.ms-excel',
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        'application/zip','application/x-zip-compressed',
-    ];
+    if ($_FILES['file']['size'] > MAX_UPLOAD_BYTES) {
+        json_out(['error' => t('error.file_large')], 422);
+    }
 
-    $finfo = new finfo(FILEINFO_MIME_TYPE);
-    $mime  = $finfo->file($_FILES['file']['tmp_name']);
-    if (!in_array($mime, $allowed_mime)) json_out(['error' => 'File type not allowed: ' . $mime], 422);
+    $allowed = allowed_upload_mimes();
+    $finfo   = new finfo(FILEINFO_MIME_TYPE);
+    $mime    = $finfo->file($_FILES['file']['tmp_name']);
+    if (!isset($allowed[$mime])) json_out(['error' => t('error.file_type', ['mime' => $mime])], 422);
 
     $original  = basename($_FILES['file']['name']);
     $ext       = strtolower(pathinfo($original, PATHINFO_EXTENSION));
-    $stored_as = bin2hex(random_bytes(16)) . ($ext ? '.' . $ext : '');
+    if (!in_array($ext, $allowed[$mime], true)) {
+        $ext = $allowed[$mime][0];
+    }
+    $stored_as = bin2hex(random_bytes(16)) . ($ext !== '' ? '.' . $ext : '');
     $dir       = __DIR__ . '/uploads/' . $uid . '/' . $todo_id;
 
-    if (!is_dir($dir) && !mkdir($dir, 0775, true)) json_out(['error' => 'Cannot create upload directory'], 500);
-    if (!move_uploaded_file($_FILES['file']['tmp_name'], $dir . '/' . $stored_as)) json_out(['error' => 'Could not save file'], 500);
+    if (!is_dir($dir) && !mkdir($dir, 0775, true)) json_out(['error' => t('error.upload_dir')], 500);
+    if (!move_uploaded_file($_FILES['file']['tmp_name'], $dir . '/' . $stored_as)) json_out(['error' => t('error.upload_save')], 500);
 
     $stmt = db()->prepare('INSERT INTO files (todo_id, uploaded_by, filename, stored_as, mime_type, size_bytes) VALUES (?,?,?,?,?,?)');
     $stmt->execute([$todo_id, $uid, $original, $stored_as, $mime, (int)$_FILES['file']['size']]);
@@ -515,8 +669,8 @@ function delete_file(int $uid, array $b): never {
     $stmt = db()->prepare('SELECT f.*, t.user_id AS todo_owner FROM files f JOIN todos t ON t.id = f.todo_id WHERE f.id = ?');
     $stmt->execute([$id]);
     $file = $stmt->fetch();
-    if (!$file) json_out(['error' => 'Not found'], 404);
-    if ($file['uploaded_by'] != $uid && $file['todo_owner'] != $uid) json_out(['error' => 'Forbidden'], 403);
+    if (!$file) json_out(['error' => t('error.not_found')], 404);
+    if ($file['uploaded_by'] != $uid && $file['todo_owner'] != $uid) json_out(['error' => t('error.forbidden')], 403);
 
     $path = __DIR__ . '/uploads/' . $file['uploaded_by'] . '/' . $file['todo_id'] . '/' . $file['stored_as'];
     if (file_exists($path)) unlink($path);

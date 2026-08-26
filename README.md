@@ -1,58 +1,61 @@
 # Todo App
 
-A lightweight, self-hosted todo/task management web app built with PHP, SQLite, and Alpine.js. No frameworks, no build step — just drop it on a PHP server and go.
+A self-hosted task manager written in PHP 8.1+, SQLite, Alpine.js, and Tailwind CSS (loaded from a CDN). Copy the files onto a PHP host, edit `config.php`, and schedule the minute cron job.
 
 ## Features
 
-- **Task management** — create, edit, complete, and delete todos
-- **Tags** — color-coded labels to organize tasks
-- **Recurring tasks** — daily, weekly, monthly, and custom recurrence rules
-- **Task sharing** — share individual todos with other registered users
-- **Comments** — leave notes on tasks
-- **File attachments** — upload and download files per task
-- **Email and Telegram notifications** — get notified before a task activates, via SMTP, PHP `mail()`, or a Telegram bot
-- **User accounts** — registration (can be locked after the first user), login, password change
-- **Inline date parsing** — type `<friday 18:00>` in a title to set the activation time naturally
-- **Inline sharing** — type `<+email>` in a title to share a task while creating it
+- Create, edit, complete, and delete tasks, including subtasks and priorities
+- Color-coded tags for grouping work
+- Recurring tasks: daily, weekly, monthly, or a custom interval. Completing a recurring task schedules the next future occurrence.
+- Share a task with other registered users, including inline `<+email>` while composing
+- Comments and file attachments on a task
+- Email and Telegram notifications before a task’s activation time (SMTP, PHP `mail()`, or a Telegram bot)
+- Create tasks by messaging the Telegram bot, using the same `<datetime>`, `#tag`, and `p1` tokens as the web form
+- English and German UI. Dates use `YYYY.MM.DD`. German uses 24-hour time; English uses 12-hour AM/PM.
+- User accounts: registration (can be disabled after the first user), login with a 90-day remember-me cookie, and password change
+- Opt-in datetime tags in titles, for example `<friday 18:00>` or `<morgen 9 Uhr>`
 
-## Tech Stack
+## Tech stack
 
-- **Backend:** PHP 8.1+, SQLite (via PDO)
+- **Backend:** PHP 8.1+, SQLite via PDO
 - **Frontend:** Alpine.js, Tailwind CSS (CDN)
-- **Email:** Custom SMTP client (supports STARTTLS / implicit SSL) or PHP `mail()`
-- **Storage:** Single SQLite file — no database server required
+- **Email:** SMTP with STARTTLS or implicit SSL, or PHP `mail()`
+- **Telegram:** Bot API (notifications and inbound task create; webhook or cron `getUpdates`)
+- **Storage:** one SQLite file under `db/`
 
 ## Setup
 
-See [DEPLOY.md](DEPLOY.md) for full deployment instructions. Quick start:
+See [DEPLOY.md](DEPLOY.md) for deployment details. In short:
 
-1. Copy the project to your webroot
-2. Edit `config.php` — `APP_URL`, SMTP, optional Telegram bot token
-3. Make `db/` and `uploads/` writable by the web server
-4. Set up a cron job: `* * * * * php /path/to/todo-app/cron.php`
-5. Visit the URL, register your first account, then set `ALLOW_REGISTRATION` to `false`
+1. Copy the project into the webroot.
+2. Edit `config.php` (`APP_URL`, SMTP, optional Telegram bot token).
+3. Make `db/` and `uploads/` writable by the web server.
+4. Schedule cron: `* * * * * php /path/to/todo-app/cron.php`
+5. Open the URL, register the first account, then set `ALLOW_REGISTRATION` to `false`.
 
-## Project Structure
+## Project structure
 
 ```
 todo-app/
 ├── index.php        # Main UI
-├── api.php          # JSON API (all data operations)
-├── app.php          # Shared kernel (DB, mail, session, CSRF)
-├── auth.php         # Login / registration
-├── cron.php         # Notification cron job
-├── download.php     # Auth-gated file downloads
-├── config.php       # App configuration (edit this)
-├── db/              # SQLite database (auto-created; not web-accessible)
-├── uploads/         # File attachments (auto-created per user/task)
-├── css/app.css      # Custom styles
-└── js/app.js        # Alpine.js app logic
+├── api.php          # JSON API
+├── app.php          # Shared kernel (database, mail, session, CSRF, Telegram)
+├── auth.php         # Login and registration
+├── cron.php         # Notifications and Telegram polling
+├── telegram.php     # Optional Telegram webhook
+├── download.php     # Authenticated file downloads
+├── config.php       # App configuration
+├── lang/            # English and German strings
+├── db/              # SQLite database (created on first request; not web-accessible)
+├── uploads/         # Attachments (created per user and task)
+├── css/app.css      # Styles
+└── js/app.js        # Alpine.js application
 ```
 
-## A note on authorship
+## Authorship
 
-This project was written almost entirely through conversations with **Claude** (Anthropic's AI assistant), using [Claude Code](https://claude.com/product/claude-code). The architecture, code, and features were developed iteratively via natural language — specifying what was needed and having Claude implement it. It's an experiment in AI-assisted solo development, and a testament to how far that workflow has come.
+This repository was written with AI coding assistants. The original application was implemented with **Claude** (Anthropic) through [Claude Code](https://claude.com/product/claude-code). Later features and maintenance were implemented with **Grok** (xAI).
 
 ## License
 
-See [LICENSE](LICENSE).
+BSD 3-Clause. See [LICENSE](LICENSE). Copyright (c) 2026 Jan-Hendrik Menke.

@@ -137,3 +137,5 @@ foreach ($rows as $row) {
 if ($sentEmails > 0 || $sentTelegrams > 0) {
     $log("Run complete. {$sentTelegrams} Telegram(s), {$sentEmails} email(s) sent. Email total today: " . ($sentToday + $sentEmails) . "/" . CRON_DAILY_LIMIT . ".");
 }
+
+telegram_poll_updates();

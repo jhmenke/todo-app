@@ -19,8 +19,15 @@ define('CRON_DAILY_LIMIT', 100);  // max notifications per day across all users
 // HTTP trigger: cron.php?key=SECRET — leave empty for CLI only (recommended)
 define('CRON_SECRET', '');
 
+// Stay signed in this long (cookie + server session). Shared hosts often wipe
+// default /tmp sessions overnight; we also store a remember token in SQLite.
+define('AUTH_LIFETIME', 90 * 24 * 60 * 60); // 90 days
+
 // ─── Telegram ─────────────────────────────────────────────────
 define('TELEGRAM_BOT_TOKEN', '');  // set to your bot token from @BotFather
+// Optional webhook secret. Empty = derived from the bot token.
+// Set webhook: see DEPLOY.md
+define('TELEGRAM_WEBHOOK_SECRET', '');
 
 // ─── Email ────────────────────────────────────────────────────
 // Set SMTP_HOST to '' to use PHP mail() instead

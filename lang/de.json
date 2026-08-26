@@ -194,6 +194,14 @@
     "open_app": "App öffnen",
     "open_task": "Öffnen und abhaken"
   },
+  "tg": {
+    "unknown": "Dieser Chat ist nicht verknüpft. In der App unter Einstellungen Chat-ID einfügen:\n{id}",
+    "linked": "Verknüpft mit {email}. Sende eine Aufgabe als Nachricht.",
+    "help": "Gleiche Kürzel wie auf der Website (werden nach dem Senden ausgewertet):\n<tomorrow 9am> oder <morgen 9 Uhr>\n#Tag\np1\n<+email@…>\n\nBeispiel:\nMilch kaufen <freitag 18:00> p2 #Einkauf",
+    "created": "Erstellt: {title}",
+    "due": "Fällig {when}",
+    "empty": "Sende einen Aufgabentitel, oder /help"
+  },
   "error": {
     "unauthenticated": "Nicht angemeldet",
     "method": "Methode nicht erlaubt",

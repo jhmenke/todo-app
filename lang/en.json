@@ -194,6 +194,14 @@
     "open_app": "Open app",
     "open_task": "Open & complete"
   },
+  "tg": {
+    "unknown": "This chat is not linked. Open Settings in the app and paste Chat ID:\n{id}",
+    "linked": "Linked to {email}. Send a task as a message.",
+    "help": "Same tokens as the website (applied after you send):\n<tomorrow 9am> or <morgen 9 Uhr>\n#Tag\np1\n<+email@…>\n\nExample:\nBuy milk <friday 18:00> p2 #Errands",
+    "created": "Created: {title}",
+    "due": "Due {when}",
+    "empty": "Send a task title, or /help"
+  },
   "error": {
     "unauthenticated": "Unauthenticated",
     "method": "Method not allowed",

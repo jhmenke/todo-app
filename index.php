@@ -725,6 +725,6 @@ $user = require_auth();
     <template x-if="undoId"><div class="toast-bar"></div></template>
 </div>
 
-<script src="js/app.js?v=9"></script>
+<script src="js/app.js?v=11"></script>
 </body>
 </html>

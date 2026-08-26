@@ -155,6 +155,21 @@ Uploads are enabled. Limits:
 
 The cron job notifies the todo owner and anyone the todo is shared with, once per (todo, user), when `active_at` falls inside that user's `notify_minutes` window. Messages are in the recipient's language and include a link to that task (`/?todo=ID`). If you are not logged in, login continues to that same URL.
 
+### Create tasks from Telegram
+
+If a user’s chat ID is saved in Settings, they can message the bot a title. After send, the same opt-in tokens as the website are applied: `<morgen 9 Uhr>`, `#Tag`, `p1`, `<+email>`. `/start` or `/help` shows examples.
+
+Incoming messages are picked up by the minute cron (`getUpdates`). For instant create, set a webhook (HTTPS required):
+
+```bash
+SECRET=$(php -r "require 'config.php'; echo TELEGRAM_WEBHOOK_SECRET !== '' ? TELEGRAM_WEBHOOK_SECRET : substr(hash('sha256', 'wh:'.TELEGRAM_BOT_TOKEN), 0, 32);")
+curl -s "https://api.telegram.org/bot$BOT_TOKEN/setWebhook" \
+  -d "url=https://yourdomain.com/todo-app/telegram.php?key=$SECRET" \
+  -d "secret_token=$SECRET"
+```
+
+`telegram.php` must be web-accessible (unlike `cron.php`).
+
 ## Optional config
 
 ```php
@@ -164,4 +179,5 @@ define('CRON_LOG_PATH',    __DIR__ . '/cron.log');
 define('CRON_DAILY_LIMIT', 100);      // notifications per calendar day
 define('CRON_SECRET',      '');       // HTTP cron key; leave empty for CLI only
 define('TELEGRAM_BOT_TOKEN', '');
+define('TELEGRAM_WEBHOOK_SECRET', ''); // optional; derived from the bot token if empty
 ```

@@ -188,6 +188,7 @@ function todoApp() {
         undoId:      null,
         undoNextId:  null,
         leavingId:   null,
+        syncTimer:   null,
 
         t(key, vars = {}) { return i18n(key, vars); },
 
@@ -209,6 +210,16 @@ function todoApp() {
                 if (!todo.error) await this.openDrawer(todo);
                 history.replaceState({}, '', location.pathname);
             }
+            this.startLiveSync();
+        },
+
+        startLiveSync() {
+            const tick = () => {
+                if (document.visibilityState === 'visible') this.loadTodos(true);
+            };
+            document.addEventListener('visibilitychange', tick);
+            window.addEventListener('focus', tick);
+            this.syncTimer = setInterval(tick, 8000);
         },
 
         // ── API helper ────────────────────────────────────────
@@ -226,8 +237,9 @@ function todoApp() {
         },
 
         // ── Load ──────────────────────────────────────────────
-        async loadTodos() {
-            this.loading = true;
+        async loadTodos(silent = false) {
+            if (silent && (this.loading || this.leavingId)) return;
+            if (!silent) this.loading = true;
             try {
                 const params = { status: this.filterStatus, sort: this.sortBy, dir: this.sortDir };
                 if (this.searchQuery.trim()) params.q = this.searchQuery.trim();
@@ -238,10 +250,20 @@ function todoApp() {
                     if (this.completedTo)   params.completed_to   = this.completedTo;
                 }
                 const data = await this.api('GET', 'todos', null, params);
-                this.todos = Array.isArray(data) ? data : [];
+                const list = Array.isArray(data) ? data : [];
+                if (silent && JSON.stringify(list) === JSON.stringify(this.todos)) return;
+                this.todos = list;
+                if (silent && this.drawer) await this.refreshOpenDrawer();
             } finally {
-                this.loading = false;
+                if (!silent) this.loading = false;
             }
+        },
+
+        async refreshOpenDrawer() {
+            if (!this.drawer) return;
+            const full = await this.api('GET', 'todo', null, { id: this.drawer.id });
+            if (full.error) this.closeDrawer();
+            else this.drawer = full;
         },
 
         async loadTags() {
@@ -717,7 +739,7 @@ function todoApp() {
             } else {
                 this.shareDropdown = [];
             }
-            this.shareDropdownIndex = -1;
+            this.shareDropdownIndex = this.shareDropdown.length ? 0 : -1;
         },
 
         shareDropdownNav(e) {
@@ -733,12 +755,14 @@ function todoApp() {
                 if (sd) this.shareDropdownIndex = (this.shareDropdownIndex - 1 + this.shareDropdown.length) % this.shareDropdown.length;
                 if (td) this.tagDropdownIndex = (this.tagDropdownIndex - 1 + this.tagDropdown.length) % this.tagDropdown.length;
             } else if (e.key === 'Enter') {
-                if (sd && this.shareDropdownIndex >= 0) {
+                if (sd) {
                     e.preventDefault();
-                    this.selectShareUser(this.shareDropdown[this.shareDropdownIndex].email);
-                } else if (td && this.tagDropdownIndex >= 0) {
+                    const i = this.shareDropdownIndex >= 0 ? this.shareDropdownIndex : 0;
+                    this.selectShareUser(this.shareDropdown[i].email);
+                } else if (td) {
                     e.preventDefault();
-                    this.selectTag(this.tagDropdown[this.tagDropdownIndex].id);
+                    const i = this.tagDropdownIndex >= 0 ? this.tagDropdownIndex : 0;
+                    this.selectTag(this.tagDropdown[i].id);
                 }
             }
         },
@@ -754,7 +778,7 @@ function todoApp() {
             } else {
                 this.tagDropdown = [];
             }
-            this.tagDropdownIndex = -1;
+            this.tagDropdownIndex = this.tagDropdown.length ? 0 : -1;
         },
 
         selectTag(tagId) {

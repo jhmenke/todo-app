@@ -4,6 +4,8 @@ require_once __DIR__ . '/config.php';
 if (!defined('ALLOW_REGISTRATION')) define('ALLOW_REGISTRATION', true);
 if (!defined('MAX_UPLOAD_BYTES'))   define('MAX_UPLOAD_BYTES', 20 * 1024 * 1024);
 if (!defined('CRON_SECRET'))        define('CRON_SECRET', '');
+if (!defined('AUTH_LIFETIME'))      define('AUTH_LIFETIME', 90 * 24 * 60 * 60); // 90 days
+if (!defined('TELEGRAM_WEBHOOK_SECRET')) define('TELEGRAM_WEBHOOK_SECRET', '');
 
 // ─── Database connection (singleton) ──────────────────────────
 function db(): PDO {
@@ -81,6 +83,16 @@ function db_init(PDO $db): void {
             size_bytes  INTEGER,
             created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS remember_tokens (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            token_hash  TEXT NOT NULL UNIQUE,
+            expires_at  DATETIME NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS app_meta (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
     ");
     // Migrations: add columns if they don't exist yet
     foreach ([
@@ -96,17 +108,28 @@ function db_init(PDO $db): void {
 
 // ─── Telegram ─────────────────────────────────────────────────
 function send_telegram(string $chat_id, string $text): bool {
-    if (!TELEGRAM_BOT_TOKEN) return false;
-    $url     = 'https://api.telegram.org/bot' . TELEGRAM_BOT_TOKEN . '/sendMessage';
-    $payload = json_encode(['chat_id' => $chat_id, 'text' => $text, 'parse_mode' => 'HTML']);
-    $ctx     = stream_context_create(['http' => [
+    $res = telegram_api('sendMessage', [
+        'chat_id'    => $chat_id,
+        'text'       => $text,
+        'parse_mode' => 'HTML',
+        'disable_web_page_preview' => true,
+    ]);
+    return is_array($res) && !empty($res['ok']);
+}
+
+function telegram_api(string $method, array $payload = []): ?array {
+    if (!TELEGRAM_BOT_TOKEN) return null;
+    $url = 'https://api.telegram.org/bot' . TELEGRAM_BOT_TOKEN . '/' . $method;
+    $ctx = stream_context_create(['http' => [
         'method'  => 'POST',
         'header'  => "Content-Type: application/json\r\n",
-        'content' => $payload,
-        'timeout' => 10,
+        'content' => json_encode($payload),
+        'timeout' => 15,
     ]]);
     $result = @file_get_contents($url, false, $ctx);
-    return $result !== false && str_contains($result, '"ok":true');
+    if ($result === false) return null;
+    $data = json_decode($result, true);
+    return is_array($data) ? $data : null;
 }
 
 // ─── Email ────────────────────────────────────────────────────
@@ -202,8 +225,16 @@ function session_cookie_path(): string {
 
 function start_session(): void {
     if (session_status() !== PHP_SESSION_NONE) return;
-    $lifetime = 30 * 24 * 60 * 60; // 30 days
+    $lifetime = AUTH_LIFETIME;
+    $save = __DIR__ . '/db/sessions';
+    if (!is_dir($save)) {
+        @mkdir($save, 0775, true);
+    }
+    if (is_dir($save) && is_writable($save)) {
+        session_save_path($save);
+    }
     ini_set('session.gc_maxlifetime', (string) $lifetime);
+    ini_set('session.cookie_lifetime', (string) $lifetime);
     session_set_cookie_params([
         'lifetime' => $lifetime,
         'path'     => session_cookie_path(),
@@ -216,6 +247,13 @@ function start_session(): void {
 
 function session_user(): ?array {
     start_session();
+    if (!empty($_SESSION['user']['id'])) {
+        return $_SESSION['user'];
+    }
+    if (PHP_SAPI === 'cli') return null;
+    $user = user_from_remember_cookie();
+    if (!$user) return null;
+    login_user($user, true);
     return $_SESSION['user'] ?? null;
 }
 
@@ -277,7 +315,8 @@ function registration_open(): bool {
     }
 }
 
-function login_user(array $user): void {
+function login_user(array $user, bool $issue_remember = true): void {
+    start_session();
     session_regenerate_id(true);
     unset($_SESSION['_csrf']);
     $_SESSION['user'] = [
@@ -287,6 +326,66 @@ function login_user(array $user): void {
         'locale'         => normalize_locale($user['locale'] ?? current_locale()),
     ];
     set_locale($_SESSION['user']['locale']);
+    if ($issue_remember) {
+        issue_remember_token((int) $user['id']);
+    }
+}
+
+function auth_cookie_opts(int $expires): array {
+    return [
+        'expires'  => $expires,
+        'path'     => session_cookie_path(),
+        'secure'   => str_starts_with(APP_URL, 'https://'),
+        'httponly' => true,
+        'samesite' => 'Lax',
+    ];
+}
+
+function issue_remember_token(int $uid): void {
+    db()->prepare('DELETE FROM remember_tokens WHERE user_id=? AND expires_at <= datetime("now","localtime")')->execute([$uid]);
+    $stmt = db()->prepare('SELECT COUNT(*) FROM remember_tokens WHERE user_id=?');
+    $stmt->execute([$uid]);
+    $extra = (int) $stmt->fetchColumn() - 7;
+    while ($extra-- > 0) {
+        db()->prepare('DELETE FROM remember_tokens WHERE id = (SELECT id FROM remember_tokens WHERE user_id=? ORDER BY expires_at ASC LIMIT 1)')
+            ->execute([$uid]);
+    }
+    $token = bin2hex(random_bytes(32));
+    $exp   = date('Y-m-d H:i:s', time() + AUTH_LIFETIME);
+    db()->prepare('INSERT INTO remember_tokens (user_id, token_hash, expires_at) VALUES (?,?,?)')
+        ->execute([$uid, hash('sha256', $token), $exp]);
+    setcookie('remember', $uid . ':' . $token, auth_cookie_opts(time() + AUTH_LIFETIME));
+}
+
+function user_from_remember_cookie(): ?array {
+    $raw = (string) ($_COOKIE['remember'] ?? '');
+    if (!preg_match('/^(\d+):([a-f0-9]{64})$/', $raw, $m)) return null;
+    $uid  = (int) $m[1];
+    $hash = hash('sha256', $m[2]);
+    $stmt = db()->prepare('SELECT id FROM remember_tokens WHERE user_id=? AND token_hash=? AND expires_at > datetime("now","localtime")');
+    $stmt->execute([$uid, $hash]);
+    $row = $stmt->fetch();
+    if (!$row) return null;
+    db()->prepare('DELETE FROM remember_tokens WHERE id=?')->execute([$row['id']]);
+    $u = db()->prepare('SELECT * FROM users WHERE id=?');
+    $u->execute([$uid]);
+    return $u->fetch() ?: null;
+}
+
+function clear_remember(int $uid): void {
+    db()->prepare('DELETE FROM remember_tokens WHERE user_id=?')->execute([$uid]);
+    setcookie('remember', '', auth_cookie_opts(time() - 3600));
+}
+
+function logout_user(): void {
+    start_session();
+    $uid = (int) ($_SESSION['user']['id'] ?? 0);
+    if ($uid) clear_remember($uid);
+    $_SESSION = [];
+    if (ini_get('session.use_cookies')) {
+        setcookie(session_name(), '', auth_cookie_opts(time() - 3600));
+    }
+    session_destroy();
 }
 
 function normalize_locale(?string $s): string {
@@ -428,4 +527,287 @@ function json_in(): array {
 
 function h(string $s): string {
     return htmlspecialchars($s, ENT_QUOTES, 'UTF-8');
+}
+
+function meta_get(string $key, string $default = ''): string {
+    $stmt = db()->prepare('SELECT value FROM app_meta WHERE key=?');
+    $stmt->execute([$key]);
+    $v = $stmt->fetchColumn();
+    return $v === false ? $default : (string) $v;
+}
+
+function meta_set(string $key, string $value): void {
+    db()->prepare('INSERT INTO app_meta (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
+        ->execute([$key, $value]);
+}
+
+function parse_date_tag(string $raw): ?array {
+    $s = mb_strtolower(trim($raw), 'UTF-8');
+    $s = preg_replace('/\bum\b/u', ' ', $s) ?? $s;
+    $s = preg_replace('/\s+/u', ' ', $s) ?? $s;
+    $s = trim($s);
+
+    $pad = fn(int $n): string => str_pad((string) $n, 2, '0', STR_PAD_LEFT);
+    $today = new DateTime('today');
+    $addDays = function (int $n) use ($today): DateTime {
+        $d = clone $today;
+        $d->modify(($n >= 0 ? '+' : '') . $n . ' days');
+        return $d;
+    };
+    $fmt = fn(DateTime $d): string => $d->format('Y-m-d');
+
+    $h = null;
+    $m = 0;
+
+    $named = [
+        12 => ['noon', 'mittag'],
+        0  => ['midnight', 'mitternacht'],
+        8  => ['morning', 'morgens', 'früh'],
+        19 => ['evening', 'abend', 'abends'],
+        22 => ['night', 'nacht', 'nachts'],
+    ];
+    foreach ($named as $hour => $words) {
+        foreach ($words as $w) {
+            if (mb_strpos($s, $w) !== false) {
+                $h = $hour;
+                $s = trim(preg_replace('/' . preg_quote($w, '/') . '/u', ' ', $s, 1) ?? $s);
+                $s = trim(preg_replace('/\s+/u', ' ', $s) ?? $s);
+                break 2;
+            }
+        }
+    }
+
+    if ($h === null) {
+        if (preg_match('/\b(\d{1,2}):(\d{2})\b/', $s, $match)) {
+            $h = (int) $match[1];
+            $m = (int) $match[2];
+            $s = trim(str_replace($match[0], ' ', $s));
+        } elseif (preg_match('/\b(\d{1,2})\s*(am|pm)\b/', $s, $match)) {
+            $h = (int) $match[1];
+            if ($match[2] === 'pm' && $h < 12) $h += 12;
+            if ($match[2] === 'am' && $h === 12) $h = 0;
+            $s = trim(str_replace($match[0], ' ', $s));
+        } elseif (preg_match('/\b(\d{1,2})\s*uhr\b/u', $s, $match)) {
+            $h = (int) $match[1];
+            $s = trim(str_replace($match[0], ' ', $s));
+        }
+    }
+
+    $dateStr = '';
+    $dow = [
+        'su' => 0, 'sunday' => 0, 'sonntag' => 0,
+        'mo' => 1, 'monday' => 1, 'montag' => 1,
+        'di' => 2, 'tue' => 2, 'tuesday' => 2, 'dienstag' => 2,
+        'mi' => 3, 'wed' => 3, 'wednesday' => 3, 'mittwoch' => 3,
+        'do' => 4, 'thu' => 4, 'thursday' => 4, 'donnerstag' => 4,
+        'fr' => 5, 'friday' => 5, 'freitag' => 5,
+        'sa' => 6, 'saturday' => 6, 'samstag' => 6,
+    ];
+
+    if (str_contains($s, 'übermorgen') || str_contains($s, 'uebermorgen') || preg_match('/\bday after tomorrow\b/', $s)) {
+        $dateStr = $fmt($addDays(2));
+        $s = trim(preg_replace('/übermorgen|uebermorgen|\bday after tomorrow\b/u', ' ', $s) ?? $s);
+    } elseif (preg_match('/\b(tomorrow|morgen)\b/u', $s)) {
+        $dateStr = $fmt($addDays(1));
+        $s = trim(preg_replace('/\b(tomorrow|morgen)\b/u', ' ', $s) ?? $s);
+    } elseif (preg_match('/\b(today|heute)\b/u', $s)) {
+        $dateStr = $fmt($today);
+        $s = trim(preg_replace('/\b(today|heute)\b/u', ' ', $s) ?? $s);
+    } elseif (preg_match('/\bnext week\b/', $s) || str_contains($s, 'nächste woche')) {
+        $toMon = (1 - (int) $today->format('w') + 7) % 7 ?: 7;
+        $dateStr = $fmt($addDays($toMon));
+        $s = trim(str_replace(['next week', 'nächste woche'], ' ', $s));
+    } elseif (preg_match('/(?:^|(?<=\s))(su|sunday|sonntag|mo|monday|montag|di|tue|tuesday|dienstag|mi|wed|wednesday|mittwoch|do|thu|thursday|donnerstag|fr|friday|freitag|sa|saturday|samstag)(?=\s|$)/u', $s, $match)) {
+        $want = $dow[$match[1]];
+        $diff = ($want - (int) $today->format('w') + 7) % 7 ?: 7;
+        $dateStr = $fmt($addDays($diff));
+        $s = trim(str_replace($match[0], ' ', $s));
+    } elseif (preg_match('/(\d{1,2})\.(\d{1,2})\.(\d{4})?/', $s, $match)) {
+        $y = !empty($match[3]) ? (int) $match[3] : (int) $today->format('Y');
+        $dateStr = sprintf('%04d-%02d-%02d', $y, (int) $match[2], (int) $match[1]);
+        $s = trim(str_replace($match[0], ' ', $s));
+    } elseif (preg_match('/(\d{4})-(\d{2})-(\d{2})/', $s, $match)) {
+        $dateStr = $match[0];
+        $s = trim(str_replace($match[0], ' ', $s));
+    }
+
+    $s = trim(preg_replace('/\s+/u', ' ', $s) ?? $s);
+    if ($h === null && $dateStr !== '' && preg_match('/^\d{1,2}$/', $s)) {
+        $n = (int) $s;
+        if ($n >= 0 && $n <= 23) $h = $n;
+    }
+
+    if ($h === null && $dateStr === '') return null;
+    if ($h !== null && ($h > 23 || $m > 59)) return null;
+
+    return [
+        'date' => $dateStr,
+        'time' => $h !== null ? $pad($h) . ':' . $pad($m) : '',
+    ];
+}
+
+function resolve_active_at(string $date, string $time): ?string {
+    if ($date === '' && $time === '') return null;
+    if ($date !== '' && $time !== '') return $date . ' ' . $time . ':00';
+    if ($date !== '') return $date . ' 09:00:00';
+    [$hh, $mm] = array_map('intval', explode(':', $time . ':0'));
+    $now = new DateTime('now');
+    $candidate = new DateTime($now->format('Y-m-d') . sprintf(' %02d:%02d:00', $hh, $mm));
+    if ($candidate <= $now) $candidate->modify('+1 day');
+    return $candidate->format('Y-m-d H:i:s');
+}
+
+function parse_todo_text(string $text): array {
+    $title = $text;
+    $date = $time = '';
+    $priority = 4;
+    $emails = [];
+    $tags = [];
+
+    if (preg_match_all('/<(\+?)([^>]+)>/u', $text, $all, PREG_SET_ORDER)) {
+        foreach ($all as $match) {
+            if ($match[1] === '+') {
+                $email = trim($match[2]);
+                if ($email !== '' && !in_array($email, $emails, true)) $emails[] = $email;
+                $title = str_replace($match[0], ' ', $title);
+            } else {
+                $parsed = parse_date_tag($match[2]);
+                if ($parsed) {
+                    if ($parsed['date'] !== '') $date = $parsed['date'];
+                    if ($parsed['time'] !== '') $time = $parsed['time'];
+                    $title = str_replace($match[0], ' ', $title);
+                }
+            }
+        }
+    }
+
+    if (preg_match_all('/(?:^|\s)p([1-4])(?=\s|$)/i', $title, $pm)) {
+        $priority = (int) $pm[1][count($pm[1]) - 1];
+        $title = preg_replace('/(?:^|\s)p[1-4](?=\s|$)/i', ' ', $title) ?? $title;
+    }
+
+    if (preg_match_all('/(?:^|(?<=\s))#([^\s#]+)/u', $title, $tm)) {
+        foreach ($tm[1] as $name) {
+            $name = trim($name);
+            if ($name !== '' && !in_array($name, $tags, true)) $tags[] = $name;
+        }
+        $title = preg_replace('/(?:^|(?<=\s))#[^\s#]+/u', ' ', $title) ?? $title;
+    }
+
+    $title = trim(preg_replace('/\s+/u', ' ', $title) ?? $title);
+    return compact('title', 'date', 'time', 'priority', 'emails', 'tags');
+}
+
+function find_or_create_tag(int $uid, string $name): int {
+    $stmt = db()->prepare('SELECT id FROM tags WHERE user_id=? AND lower(name)=lower(?)');
+    $stmt->execute([$uid, $name]);
+    $id = $stmt->fetchColumn();
+    if ($id) return (int) $id;
+    $colors = ['#5b4dff', '#ec4899', '#f59e0b', '#10b981', '#3b82f6', '#ef4444', '#8b5cf6', '#14b8a6'];
+    db()->prepare('INSERT INTO tags (user_id,name,color) VALUES (?,?,?)')
+        ->execute([$uid, $name, $colors[array_rand($colors)]]);
+    return (int) db()->lastInsertId();
+}
+
+function create_todo_from_text(int $uid, string $text): ?array {
+    $p = parse_todo_text($text);
+    if ($p['title'] === '') return null;
+    $active = resolve_active_at($p['date'], $p['time']);
+    $stmt = db()->prepare('INSERT INTO todos (user_id,title,active_at,priority) VALUES (?,?,?,?)');
+    $priority = max(1, min(4, (int) $p['priority'] ?: 4));
+    $stmt->execute([$uid, $p['title'], $active, $priority]);
+    $todo_id = (int) db()->lastInsertId();
+    $tag_ids = [];
+    foreach ($p['tags'] as $name) {
+        $tag_ids[] = find_or_create_tag($uid, $name);
+    }
+    if ($tag_ids) {
+        $ins = db()->prepare('INSERT OR IGNORE INTO todo_tags (todo_id, tag_id) VALUES (?,?)');
+        foreach ($tag_ids as $tid) $ins->execute([$todo_id, $tid]);
+    }
+    $share_ok = $share_fail = [];
+    foreach ($p['emails'] as $email) {
+        $u = db()->prepare('SELECT id FROM users WHERE email=? AND id!=?');
+        $u->execute([$email, $uid]);
+        $oid = $u->fetchColumn();
+        if (!$oid) { $share_fail[] = $email; continue; }
+        try {
+            db()->prepare('INSERT INTO todo_shares (todo_id, user_id) VALUES (?,?)')->execute([$todo_id, $oid]);
+            $share_ok[] = $email;
+        } catch (PDOException) {
+            $share_fail[] = $email;
+        }
+    }
+    return [
+        'id'         => $todo_id,
+        'title'      => $p['title'],
+        'active_at'  => $active,
+        'priority'   => $priority,
+        'share_ok'   => $share_ok,
+        'share_fail' => $share_fail,
+    ];
+}
+
+function telegram_user_by_chat(string $chat_id): ?array {
+    $stmt = db()->prepare('SELECT * FROM users WHERE telegram_chat_id=?');
+    $stmt->execute([$chat_id]);
+    return $stmt->fetch() ?: null;
+}
+
+function handle_telegram_update(array $update): void {
+    $msg = $update['message'] ?? $update['edited_message'] ?? null;
+    if (!$msg || empty($msg['text'])) return;
+    $chat_id = (string) ($msg['chat']['id'] ?? '');
+    if ($chat_id === '') return;
+    $text = trim((string) $msg['text']);
+    $user = telegram_user_by_chat($chat_id);
+    $lang = $user['locale'] ?? ($msg['from']['language_code'] ?? 'en');
+
+    if (preg_match('/^\/(start|help)(@\S+)?$/i', $text)) {
+        if ($user) {
+            send_telegram($chat_id, t('tg.linked', ['email' => $user['email']], $lang) . "\n\n" . t('tg.help', [], $lang));
+        } else {
+            send_telegram($chat_id, t('tg.unknown', ['id' => $chat_id], $lang) . "\n\n" . t('tg.help', [], $lang));
+        }
+        return;
+    }
+    if (str_starts_with($text, '/')) return;
+    if (!$user) {
+        send_telegram($chat_id, t('tg.unknown', ['id' => $chat_id], $lang));
+        return;
+    }
+    $todo = create_todo_from_text((int) $user['id'], $text);
+    if (!$todo) {
+        send_telegram($chat_id, t('tg.empty', [], $lang));
+        return;
+    }
+    $loc = $user['locale'] ?? $lang;
+    $reply = t('tg.created', ['title' => $todo['title']], $loc);
+    if ($todo['active_at']) {
+        $reply .= "\n" . t('tg.due', ['when' => format_notify_when($todo['active_at'], $loc)], $loc);
+    }
+    if ($todo['priority'] < 4) {
+        $reply .= "\nP" . $todo['priority'];
+    }
+    $reply .= "\n<a href=\"" . htmlspecialchars(todo_url($todo['id']), ENT_QUOTES, 'UTF-8') . '">'
+        . htmlspecialchars(t('notify.open_task', [], $loc)) . '</a>';
+    send_telegram($chat_id, $reply);
+}
+
+function telegram_poll_updates(): void {
+    if (!TELEGRAM_BOT_TOKEN) return;
+    $offset = (int) meta_get('telegram_offset', '0');
+    $res = telegram_api('getUpdates', [
+        'offset'  => $offset,
+        'timeout' => 0,
+        'allowed_updates' => ['message'],
+    ]);
+    if (!$res || empty($res['ok']) || empty($res['result'])) return;
+    foreach ($res['result'] as $update) {
+        handle_telegram_update($update);
+        if (isset($update['update_id'])) {
+            $offset = (int) $update['update_id'] + 1;
+        }
+    }
+    meta_set('telegram_offset', (string) $offset);
 }

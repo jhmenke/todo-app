@@ -12,8 +12,8 @@ if (isset($_GET['locale'])) {
 
 $next = safe_next($_POST['next'] ?? $_GET['next'] ?? '');
 
-// Already logged in
-if (!empty($_SESSION['user'])) {
+// Already logged in (session or remember-me cookie)
+if (session_user()) {
     header('Location: ' . $next);
     exit;
 }

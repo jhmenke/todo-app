@@ -381,7 +381,7 @@ function change_password(int $uid, array $b): never {
 }
 
 function logout(): never {
-    session_destroy();
+    logout_user();
     json_out(['ok' => true]);
 }
 
@@ -572,32 +572,48 @@ function sync_tags(int $todo_id, int $uid, ?array $tag_ids): void {
     }
 }
 
-function spawn_recurrence(int $uid, array $todo): ?array {
-    $active_at = new DateTime($todo['active_at'] ?? 'now');
+function advance_recurrence(DateTime $from, array $todo): DateTime {
+    $next = clone $from;
     $recur_type = $todo['recur_type'];
 
     if ($recur_type === 'daily') {
-        $active_at->modify('+1 day');
+        $next->modify('+1 day');
     } elseif ($recur_type === 'monthly') {
-        $active_at->modify('+1 month');
+        $next->modify('+1 month');
     } elseif ($recur_type === 'custom') {
-        $active_at->modify('+' . max(1, (int)$todo['recur_interval']) . ' days');
+        $next->modify('+' . max(1, (int)$todo['recur_interval']) . ' days');
     } elseif ($recur_type === 'weekly') {
         $days = json_decode($todo['recur_days'] ?? '[]', true); // [0=Sun..6=Sat]
-        if (empty($days)) { $active_at->modify('+7 days'); }
-        else {
+        if (empty($days)) {
+            $next->modify('+7 days');
+        } else {
             sort($days);
-            $current_dow = (int)$active_at->format('w');
+            $current_dow = (int)$next->format('w');
             $next_dow = null;
-            foreach ($days as $d) { if ($d > $current_dow) { $next_dow = $d; break; } }
+            foreach ($days as $d) {
+                if ($d > $current_dow) { $next_dow = $d; break; }
+            }
             if ($next_dow === null) $next_dow = $days[0];
             $diff = ($next_dow - $current_dow + 7) % 7 ?: 7;
-            $active_at->modify("+{$diff} days");
+            $next->modify("+{$diff} days");
         }
     }
 
-    $next_active = $active_at->format('Y-m-d H:i:s');
-    if ($todo['recur_ends_at'] && $next_active > $todo['recur_ends_at']) return null;
+    return $next;
+}
+
+function spawn_recurrence(int $uid, array $todo): ?array {
+    $active_at = new DateTime($todo['active_at'] ?? 'now');
+    $now = new DateTime('now');
+    $guard = 0;
+
+    // Skip missed occurrences: next instance must be in the future (keep original clock time).
+    do {
+        $active_at = advance_recurrence($active_at, $todo);
+        if (++$guard > 1000) return null;
+        $next_active = $active_at->format('Y-m-d H:i:s');
+        if ($todo['recur_ends_at'] && $next_active > $todo['recur_ends_at']) return null;
+    } while ($active_at <= $now);
 
     $recur_parent = $todo['recur_parent_id'] ?? $todo['id'];
     $priority = clamp_priority($todo['priority'] ?? 4);

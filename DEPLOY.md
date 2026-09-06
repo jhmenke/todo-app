@@ -33,6 +33,7 @@ define('SMTP_PASS', 'your_smtp_password');
 define('SMTP_FROM', 'noreply@yourdomain.com');
 
 define('TELEGRAM_BOT_TOKEN', ''); // optional; from @BotFather
+define('TELEGRAM_BOT_USERNAME', ''); // optional; auto from getMe if empty
 ```
 
 `APP_URL` is used for login redirects, session cookie path, and **Telegram/email links** to open a specific todo (`/?todo=ID`). If it is wrong (or still `http://127.0.0.1:8080`), login and notification links break.
@@ -45,7 +46,7 @@ define('SMTP_HOST', '');
 
 Both port 587 (STARTTLS) and port 465 (implicit SSL/SMTPS) are supported automatically.
 
-Users pick Telegram, email, or both in Settings. Telegram also needs each user's chat ID (Settings explains how to get it from `@userinfobot`). Language (English / Deutsch) is in Settings; guests can switch EN/DE on the login page. Notification text follows the **recipient's** language.
+Users pick Telegram, email, or both in Settings. Telegram is one bot from `TELEGRAM_BOT_TOKEN`; each user taps **Link Telegram** in Settings (no chat ID to copy). Language (English / Deutsch) is in Settings; guests can switch EN/DE on the login page. Notification text follows the **recipient's** language.
 
 ### 3. Make the database and uploads directories writable
 
@@ -105,7 +106,7 @@ location /todo-app/ {
 ### 6. First run
 
 1. Visit `https://yourdomain.com/todo-app/` and register your first account. The database schema is created automatically (or upgraded — see below).
-2. Open **Settings**: language, notification channel, lead time, Telegram chat ID if you use Telegram.
+2. Open **Settings**: language, notification channel, lead time. If you use Telegram, tap **Link Telegram** and Start the bot.
 3. Set `ALLOW_REGISTRATION` to `false` in `config.php` so strangers cannot create accounts. (The very first user can still register even when this is false, in case the database is empty.)
 
 ## Reusing an existing SQLite database
@@ -150,14 +151,14 @@ Uploads are enabled. Limits:
 | Channel | What you need |
 |---|---|
 | Email | `SMTP_*` in `config.php`, or empty `SMTP_HOST` to use `mail()` |
-| Telegram | `TELEGRAM_BOT_TOKEN`, plus each user's chat ID in Settings |
+| Telegram | `TELEGRAM_BOT_TOKEN`; each user taps Link Telegram in Settings |
 | Both | Both of the above; users pick the channel in Settings |
 
 The cron job notifies the todo owner and anyone the todo is shared with, once per (todo, user), when `active_at` falls inside that user's `notify_minutes` window. Messages are in the recipient's language and include a link to that task (`/?todo=ID`). If you are not logged in, login continues to that same URL.
 
 ### Create tasks from Telegram
 
-If a user’s chat ID is saved in Settings, they can message the bot a title. After send, the same opt-in tokens as the website are applied: `<morgen 9 Uhr>`, `#Tag`, `p1`, `<+email>`. `/start` or `/help` shows examples.
+After linking in Settings, message the bot a title. Dates can be trailing (`tomorrow 9am`, `morgen 9 Uhr`) or quoted (`"friday 18:00"`). `#Tag`, `p1`, and `<+email>` still work. `/start` or `/help` shows examples. `/unlink` disconnects the chat.
 
 Incoming messages are picked up by the minute cron (`getUpdates`). For instant create, set a webhook (HTTPS required):
 
@@ -179,5 +180,6 @@ define('CRON_LOG_PATH',    __DIR__ . '/cron.log');
 define('CRON_DAILY_LIMIT', 100);      // notifications per calendar day
 define('CRON_SECRET',      '');       // HTTP cron key; leave empty for CLI only
 define('TELEGRAM_BOT_TOKEN', '');
+define('TELEGRAM_BOT_USERNAME', ''); // optional; auto from getMe if empty
 define('TELEGRAM_WEBHOOK_SECRET', ''); // optional; derived from the bot token if empty
 ```

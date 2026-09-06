@@ -679,12 +679,24 @@ $user = require_auth();
                 </div>
             </div>
 
-            <!-- Telegram chat ID -->
+            <!-- Telegram link -->
             <div x-show="settingsChannel === 'telegram' || settingsChannel === 'both'">
-                <label class="block text-sm font-medium mb-1" x-text="t('settings.chat_id')"></label>
-                <input type="text" x-model="settingsTelegram" placeholder="e.g. 123456789"
-                    class="w-full">
-                <p class="text-xs text-stone-400 mt-1.5 leading-relaxed" x-text="t('settings.chat_help')"></p>
+                <label class="block text-sm font-medium mb-1" x-text="t('settings.telegram')"></label>
+                <p x-show="!telegramConfigured" class="text-xs text-stone-400 leading-relaxed" x-text="t('settings.telegram_off')"></p>
+                <div x-show="telegramConfigured" class="space-y-2">
+                    <div x-show="telegramLinked" class="flex items-center gap-2">
+                        <span class="text-sm font-medium text-emerald-700" x-text="t('settings.telegram_linked')"></span>
+                        <button type="button" @click="unlinkTelegram()" class="btn-ghost" x-text="t('settings.telegram_unlink')"></button>
+                    </div>
+                    <div x-show="!telegramLinked" class="flex flex-wrap items-center gap-2">
+                        <a x-show="telegramLinkUrl" :href="telegramLinkUrl" target="_blank" rel="noopener"
+                            class="btn-primary no-underline" @click="onTelegramLinkClick()"
+                            x-text="t('settings.telegram_link')"></a>
+                        <span x-show="telegramLinkPending" class="text-xs text-stone-400" x-text="t('settings.telegram_waiting')"></span>
+                    </div>
+                    <p class="text-xs text-stone-400 leading-relaxed" x-text="t('settings.telegram_help')"></p>
+                </div>
+                <p x-show="telegramError" class="text-xs text-red-500 mt-1" x-text="telegramError"></p>
             </div>
 
             <!-- Notify lead time -->
@@ -725,6 +737,6 @@ $user = require_auth();
     <template x-if="undoId"><div class="toast-bar"></div></template>
 </div>
 
-<script src="js/app.js?v=11"></script>
+<script src="js/app.js?v=12"></script>
 </body>
 </html>

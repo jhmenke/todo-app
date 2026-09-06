@@ -60,6 +60,8 @@ match ($action) {
     'find_user'       => find_user($uid),
     'settings'        => get_settings($uid),
     'update_settings' => update_settings($uid, $body),
+    'telegram_link'   => telegram_link($uid),
+    'telegram_unlink' => telegram_unlink($uid),
     'change_password' => change_password($uid, $body),
     'logout'          => logout(),
     'get_files'       => get_files($uid),
@@ -349,19 +351,35 @@ function find_user(int $uid): never {
 function get_settings(int $uid): never {
     $stmt = db()->prepare('SELECT id, email, notify_minutes, telegram_chat_id, notify_channel, locale FROM users WHERE id=?');
     $stmt->execute([$uid]);
-    json_out($stmt->fetch());
+    $row = $stmt->fetch();
+    if (!$row) json_out(['error' => t('error.not_found')], 404);
+    $row['telegram_linked'] = !empty($row['telegram_chat_id']);
+    $row['telegram_configured'] = telegram_configured();
+    unset($row['telegram_chat_id']);
+    json_out($row);
 }
 
 function update_settings(int $uid, array $b): never {
     $minutes  = max(1, min(1440, (int)($b['notify_minutes'] ?? 5)));
-    $tg       = trim($b['telegram_chat_id'] ?? '');
     $channel  = in_array($b['notify_channel'] ?? '', ['telegram','email','both']) ? $b['notify_channel'] : 'telegram';
     $locale   = normalize_locale($b['locale'] ?? current_locale());
-    db()->prepare('UPDATE users SET notify_minutes=?, telegram_chat_id=?, notify_channel=?, locale=? WHERE id=?')
-        ->execute([$minutes, $tg ?: null, $channel, $locale, $uid]);
+    db()->prepare('UPDATE users SET notify_minutes=?, notify_channel=?, locale=? WHERE id=?')
+        ->execute([$minutes, $channel, $locale, $uid]);
     $_SESSION['user']['notify_minutes'] = $minutes;
     set_locale($locale);
     json_out(['ok' => true, 'notify_minutes' => $minutes, 'locale' => $locale]);
+}
+
+function telegram_link(int $uid): never {
+    if (!telegram_configured()) json_out(['error' => t('error.telegram_off')], 503);
+    $link = telegram_create_link($uid);
+    if (!$link) json_out(['error' => t('error.telegram_bot')], 502);
+    json_out($link);
+}
+
+function telegram_unlink(int $uid): never {
+    telegram_unlink_user($uid);
+    json_out(['ok' => true, 'telegram_linked' => false]);
 }
 
 function change_password(int $uid, array $b): never {

@@ -6,6 +6,7 @@ if (!defined('MAX_UPLOAD_BYTES'))   define('MAX_UPLOAD_BYTES', 20 * 1024 * 1024)
 if (!defined('CRON_SECRET'))        define('CRON_SECRET', '');
 if (!defined('AUTH_LIFETIME'))      define('AUTH_LIFETIME', 90 * 24 * 60 * 60); // 90 days
 if (!defined('TELEGRAM_WEBHOOK_SECRET')) define('TELEGRAM_WEBHOOK_SECRET', '');
+if (!defined('TELEGRAM_BOT_USERNAME')) define('TELEGRAM_BOT_USERNAME', '');
 
 // ─── Database connection (singleton) ──────────────────────────
 function db(): PDO {
@@ -93,6 +94,11 @@ function db_init(PDO $db): void {
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS telegram_link_tokens (
+            token_hash TEXT PRIMARY KEY,
+            user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            expires_at DATETIME NOT NULL
+        );
     ");
     // Migrations: add columns if they don't exist yet
     foreach ([
@@ -130,6 +136,67 @@ function telegram_api(string $method, array $payload = []): ?array {
     if ($result === false) return null;
     $data = json_decode($result, true);
     return is_array($data) ? $data : null;
+}
+
+function telegram_configured(): bool {
+    return TELEGRAM_BOT_TOKEN !== '';
+}
+
+function telegram_bot_username(): ?string {
+    if (TELEGRAM_BOT_USERNAME !== '') {
+        return ltrim(TELEGRAM_BOT_USERNAME, '@');
+    }
+    $fp = substr(hash('sha256', TELEGRAM_BOT_TOKEN), 0, 12);
+    if (meta_get('telegram_bot_token_fp') === $fp) {
+        $cached = meta_get('telegram_bot_username');
+        if ($cached !== '') return $cached;
+    }
+    $res = telegram_api('getMe');
+    $name = is_array($res) ? (string) ($res['result']['username'] ?? '') : '';
+    if ($name === '') return null;
+    meta_set('telegram_bot_token_fp', $fp);
+    meta_set('telegram_bot_username', $name);
+    return $name;
+}
+
+function telegram_create_link(int $uid): ?array {
+    if (!telegram_configured()) return null;
+    $username = telegram_bot_username();
+    if (!$username) return null;
+    db()->prepare('DELETE FROM telegram_link_tokens WHERE user_id=? OR expires_at <= datetime("now","localtime")')
+        ->execute([$uid]);
+    $token = bin2hex(random_bytes(16));
+    db()->prepare('INSERT INTO telegram_link_tokens (token_hash, user_id, expires_at) VALUES (?,?,datetime("now","localtime","+30 minutes"))')
+        ->execute([hash('sha256', $token), $uid]);
+    return [
+        'url'      => 'https://t.me/' . $username . '?start=' . $token,
+        'username' => $username,
+    ];
+}
+
+function telegram_link_chat(string $token, string $chat_id): ?array {
+    $token = strtolower(trim($token));
+    if (!preg_match('/^[a-f0-9]{32}$/', $token)) return null;
+    $hash = hash('sha256', $token);
+    $stmt = db()->prepare('SELECT user_id FROM telegram_link_tokens WHERE token_hash=? AND expires_at > datetime("now","localtime")');
+    $stmt->execute([$hash]);
+    $uid = $stmt->fetchColumn();
+    if (!$uid) return null;
+    $uid = (int) $uid;
+    db()->prepare('UPDATE users SET telegram_chat_id=NULL WHERE telegram_chat_id=? AND id!=?')->execute([$chat_id, $uid]);
+    db()->prepare('UPDATE users SET telegram_chat_id=? WHERE id=?')->execute([$chat_id, $uid]);
+    db()->prepare('DELETE FROM telegram_link_tokens WHERE token_hash=? OR user_id=?')->execute([$hash, $uid]);
+    $u = db()->prepare('SELECT * FROM users WHERE id=?');
+    $u->execute([$uid]);
+    return $u->fetch() ?: null;
+}
+
+function telegram_unlink_chat(string $chat_id): void {
+    db()->prepare('UPDATE users SET telegram_chat_id=NULL WHERE telegram_chat_id=?')->execute([$chat_id]);
+}
+
+function telegram_unlink_user(int $uid): void {
+    db()->prepare('UPDATE users SET telegram_chat_id=NULL WHERE id=?')->execute([$uid]);
 }
 
 // ─── Email ────────────────────────────────────────────────────
@@ -634,7 +701,10 @@ function parse_date_tag(string $raw): ?array {
     $s = trim(preg_replace('/\s+/u', ' ', $s) ?? $s);
     if ($h === null && $dateStr !== '' && preg_match('/^\d{1,2}$/', $s)) {
         $n = (int) $s;
-        if ($n >= 0 && $n <= 23) $h = $n;
+        if ($n >= 0 && $n <= 23) {
+            $h = $n;
+            $s = '';
+        }
     }
 
     if ($h === null && $dateStr === '') return null;
@@ -643,6 +713,7 @@ function parse_date_tag(string $raw): ?array {
     return [
         'date' => $dateStr,
         'time' => $h !== null ? $pad($h) . ':' . $pad($m) : '',
+        'rest' => $s,
     ];
 }
 
@@ -664,14 +735,16 @@ function parse_todo_text(string $text): array {
     $emails = [];
     $tags = [];
 
-    if (preg_match_all('/<(\+?)([^>]+)>/u', $text, $all, PREG_SET_ORDER)) {
+    if (preg_match_all('/<(\+?)([^>]+)>|["“„](\+?)([^"“”„]+)["“”]/u', $text, $all, PREG_SET_ORDER)) {
         foreach ($all as $match) {
-            if ($match[1] === '+') {
-                $email = trim($match[2]);
+            $plus  = str_starts_with($match[0], '<') ? $match[1] : ($match[3] ?? '');
+            $inner = str_starts_with($match[0], '<') ? $match[2] : ($match[4] ?? '');
+            if ($plus === '+') {
+                $email = trim($inner);
                 if ($email !== '' && !in_array($email, $emails, true)) $emails[] = $email;
                 $title = str_replace($match[0], ' ', $title);
             } else {
-                $parsed = parse_date_tag($match[2]);
+                $parsed = parse_date_tag($inner);
                 if ($parsed) {
                     if ($parsed['date'] !== '') $date = $parsed['date'];
                     if ($parsed['time'] !== '') $time = $parsed['time'];
@@ -695,7 +768,41 @@ function parse_todo_text(string $text): array {
     }
 
     $title = trim(preg_replace('/\s+/u', ' ', $title) ?? $title);
+
+    if ($date === '' && $time === '') {
+        $trail = extract_trailing_date($title);
+        $title = $trail['title'];
+        $date  = $trail['date'];
+        $time  = $trail['time'];
+    }
+
     return compact('title', 'date', 'time', 'priority', 'emails', 'tags');
+}
+
+function extract_trailing_date(string $title): array {
+    $empty = ['title' => $title, 'date' => '', 'time' => ''];
+    $words = preg_split('/\s+/u', trim($title), -1, PREG_SPLIT_NO_EMPTY);
+    if (!$words) return $empty;
+    $max = min(4, count($words));
+    for ($n = $max; $n >= 1; $n--) {
+        $suffix = implode(' ', array_slice($words, -$n));
+        $parsed = parse_date_tag($suffix);
+        if (!$parsed) continue;
+        if (trim((string) ($parsed['rest'] ?? '')) !== '') continue;
+        if (is_bare_weekday_phrase($suffix, $parsed)) continue;
+        return [
+            'title' => trim(implode(' ', array_slice($words, 0, -$n))),
+            'date'  => $parsed['date'],
+            'time'  => $parsed['time'],
+        ];
+    }
+    return $empty;
+}
+
+function is_bare_weekday_phrase(string $raw, array $parsed): bool {
+    if (($parsed['time'] ?? '') !== '') return false;
+    $s = mb_strtolower(trim($raw), 'UTF-8');
+    return (bool) preg_match('/^(su|sunday|sonntag|mo|monday|montag|di|tue|tuesday|dienstag|mi|wed|wednesday|mittwoch|do|thu|thursday|donnerstag|fr|friday|freitag|sa|saturday|samstag)$/u', $s);
 }
 
 function find_or_create_tag(int $uid, string $name): int {
@@ -763,17 +870,38 @@ function handle_telegram_update(array $update): void {
     $user = telegram_user_by_chat($chat_id);
     $lang = $user['locale'] ?? ($msg['from']['language_code'] ?? 'en');
 
-    if (preg_match('/^\/(start|help)(@\S+)?$/i', $text)) {
+    if (preg_match('/^\/(start|help|unlink)(?:@\S+)?(?:\s+(\S+))?$/i', $text, $cmd)) {
+        $name = strtolower($cmd[1]);
+        $payload = $cmd[2] ?? '';
+        if ($name === 'unlink') {
+            if ($user) {
+                telegram_unlink_chat($chat_id);
+                send_telegram($chat_id, t('tg.unlinked', [], $user['locale'] ?? $lang));
+            } else {
+                send_telegram($chat_id, t('tg.unknown', [], $lang));
+            }
+            return;
+        }
+        if ($name === 'start' && $payload !== '') {
+            $linked = telegram_link_chat($payload, $chat_id);
+            if ($linked) {
+                $lang = $linked['locale'] ?? $lang;
+                send_telegram($chat_id, t('tg.linked', ['email' => $linked['email']], $lang) . "\n\n" . t('tg.help', [], $lang));
+            } else {
+                send_telegram($chat_id, t('tg.link_expired', [], $lang));
+            }
+            return;
+        }
         if ($user) {
             send_telegram($chat_id, t('tg.linked', ['email' => $user['email']], $lang) . "\n\n" . t('tg.help', [], $lang));
         } else {
-            send_telegram($chat_id, t('tg.unknown', ['id' => $chat_id], $lang) . "\n\n" . t('tg.help', [], $lang));
+            send_telegram($chat_id, t('tg.unknown', [], $lang) . "\n\n" . t('tg.help', [], $lang));
         }
         return;
     }
     if (str_starts_with($text, '/')) return;
     if (!$user) {
-        send_telegram($chat_id, t('tg.unknown', ['id' => $chat_id], $lang));
+        send_telegram($chat_id, t('tg.unknown', [], $lang));
         return;
     }
     $todo = create_todo_from_text((int) $user['id'], $text);

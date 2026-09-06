@@ -151,8 +151,12 @@
     "telegram": "Telegram",
     "email": "Email",
     "both": "Both",
-    "chat_id": "Telegram Chat ID",
-    "chat_help": "To find your Chat ID: 1. Open Telegram and search for @userinfobot. 2. Start the bot and send it any message. 3. It will reply with your numeric Chat ID — paste it above.",
+    "telegram_link": "Link Telegram",
+    "telegram_linked": "Linked",
+    "telegram_unlink": "Unlink",
+    "telegram_help": "Opens the app bot. Tap Start to connect this account, then message it to create tasks.",
+    "telegram_waiting": "Waiting for Telegram…",
+    "telegram_off": "Telegram is not configured on this server.",
     "lead_time": "Notification lead time",
     "minutes_before": "minutes before active",
     "change_password": "Change password",
@@ -195,12 +199,14 @@
     "open_task": "Open & complete"
   },
   "tg": {
-    "unknown": "This chat is not linked. Open Settings in the app and paste Chat ID:\n{id}",
+    "unknown": "This chat is not linked. Open Settings in the app and tap Link Telegram.",
     "linked": "Linked to {email}. Send a task as a message.",
-    "help": "Same tokens as the website (applied after you send):\n<tomorrow 9am> or <morgen 9 Uhr>\n#Tag\np1\n<+email@…>\n\nExample:\nBuy milk <friday 18:00> p2 #Errands",
+    "help": "Dates at the end of the message, or in quotes:\nBuy milk tomorrow 9am\nMilch kaufen \"morgen 9 Uhr\"\n#Tag\np1\n&lt;+email@…&gt;\n\nExample:\nBuy milk friday 18:00 p2 #Errands",
     "created": "Created: {title}",
     "due": "Due {when}",
-    "empty": "Send a task title, or /help"
+    "empty": "Send a task title, or /help",
+    "link_expired": "That link expired. Open Settings and tap Link Telegram again.",
+    "unlinked": "Telegram unlinked. You will no longer get notifications here."
   },
   "error": {
     "unauthenticated": "Unauthenticated",
@@ -224,6 +230,8 @@
     "file_type": "File type not allowed: {mime}",
     "upload_dir": "Cannot create upload directory",
     "upload_save": "Could not save file",
-    "forbidden": "Forbidden"
+    "forbidden": "Forbidden",
+    "telegram_off": "Telegram is not configured",
+    "telegram_bot": "Could not reach the Telegram bot. Try again later."
   }
 }

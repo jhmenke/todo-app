@@ -25,6 +25,8 @@ define('AUTH_LIFETIME', 90 * 24 * 60 * 60); // 90 days
 
 // ─── Telegram ─────────────────────────────────────────────────
 define('TELEGRAM_BOT_TOKEN', '');  // set to your bot token from @BotFather
+// Optional public @username. Empty = fetched via getMe and cached.
+define('TELEGRAM_BOT_USERNAME', '');
 // Optional webhook secret. Empty = derived from the bot token.
 // Set webhook: see DEPLOY.md
 define('TELEGRAM_WEBHOOK_SECRET', '');

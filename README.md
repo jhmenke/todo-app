@@ -10,10 +10,10 @@ A self-hosted task manager written in PHP 8.1+, SQLite, Alpine.js, and Tailwind 
 - Share a task with other registered users, including inline `<+email>` while composing
 - Comments and file attachments on a task
 - Email and Telegram notifications before a task’s activation time (SMTP, PHP `mail()`, or a Telegram bot)
-- Create tasks by messaging the Telegram bot, using the same `<datetime>`, `#tag`, and `p1` tokens as the web form
+- Create tasks by messaging the Telegram bot. Dates can sit at the end of the message (`tomorrow 9am`) or in quotes (`"morgen 9 Uhr"`); `#tag`, `p1`, and `<+email>` still work
 - English and German UI. Dates use `YYYY.MM.DD`. German uses 24-hour time; English uses 12-hour AM/PM.
 - User accounts: registration (can be disabled after the first user), login with a 90-day remember-me cookie, and password change
-- Opt-in datetime tags in titles, for example `<friday 18:00>` or `<morgen 9 Uhr>`
+- Opt-in datetime tags in titles, for example `"friday 18:00"`, `<morgen 9 Uhr>`, or (Telegram) a date at the end of the message
 
 ## Tech stack
 

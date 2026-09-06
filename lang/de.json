@@ -151,8 +151,12 @@
     "telegram": "Telegram",
     "email": "E-Mail",
     "both": "Beides",
-    "chat_id": "Telegram Chat-ID",
-    "chat_help": "So findest du deine Chat-ID: 1. Öffne Telegram und suche @userinfobot. 2. Starte den Bot und schicke eine Nachricht. 3. Er antwortet mit deiner numerischen Chat-ID — hier einfügen.",
+    "telegram_link": "Telegram verknüpfen",
+    "telegram_linked": "Verknüpft",
+    "telegram_unlink": "Trennen",
+    "telegram_help": "Öffnet den App-Bot. Tippe auf Start, um dieses Konto zu verbinden. Danach kannst du Aufgaben per Nachricht anlegen.",
+    "telegram_waiting": "Warte auf Telegram…",
+    "telegram_off": "Telegram ist auf diesem Server nicht eingerichtet.",
     "lead_time": "Vorlaufzeit",
     "minutes_before": "Minuten vor Aktivierung",
     "change_password": "Passwort ändern",
@@ -195,12 +199,14 @@
     "open_task": "Öffnen und abhaken"
   },
   "tg": {
-    "unknown": "Dieser Chat ist nicht verknüpft. In der App unter Einstellungen Chat-ID einfügen:\n{id}",
+    "unknown": "Dieser Chat ist nicht verknüpft. In der App unter Einstellungen auf Telegram verknüpfen tippen.",
     "linked": "Verknüpft mit {email}. Sende eine Aufgabe als Nachricht.",
-    "help": "Gleiche Kürzel wie auf der Website (werden nach dem Senden ausgewertet):\n<tomorrow 9am> oder <morgen 9 Uhr>\n#Tag\np1\n<+email@…>\n\nBeispiel:\nMilch kaufen <freitag 18:00> p2 #Einkauf",
+    "help": "Datum am Ende der Nachricht oder in Anführungszeichen:\nMilch kaufen morgen 9 Uhr\nBuy milk \"tomorrow 9am\"\n#Tag\np1\n&lt;+email@…&gt;\n\nBeispiel:\nMilch kaufen freitag 18:00 p2 #Einkauf",
     "created": "Erstellt: {title}",
     "due": "Fällig {when}",
-    "empty": "Sende einen Aufgabentitel, oder /help"
+    "empty": "Sende einen Aufgabentitel, oder /help",
+    "link_expired": "Der Link ist abgelaufen. In den Einstellungen erneut auf Telegram verknüpfen tippen.",
+    "unlinked": "Telegram getrennt. Du bekommst hier keine Benachrichtigungen mehr."
   },
   "error": {
     "unauthenticated": "Nicht angemeldet",
@@ -224,6 +230,8 @@
     "file_type": "Dateityp nicht erlaubt: {mime}",
     "upload_dir": "Upload-Ordner konnte nicht erstellt werden",
     "upload_save": "Datei konnte nicht gespeichert werden",
-    "forbidden": "Verboten"
+    "forbidden": "Verboten",
+    "telegram_off": "Telegram ist nicht eingerichtet",
+    "telegram_bot": "Telegram-Bot nicht erreichbar. Bitte später erneut versuchen."
   }
 }

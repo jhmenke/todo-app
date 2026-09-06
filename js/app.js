@@ -172,10 +172,15 @@ function todoApp() {
         // ── Settings modal ────────────────────────────────────
         showSettings:     false,
         settingsMinutes:  5,
-        settingsTelegram: '',
         settingsChannel:  'telegram',
         settingsLocale:   (typeof window !== 'undefined' && window.LOCALE) ? window.LOCALE : 'en',
         settingsError:    '',
+        telegramLinked:      false,
+        telegramConfigured:  false,
+        telegramLinkPending: false,
+        telegramLinkUrl:     '',
+        telegramError:       '',
+        telegramLinkTimer:   null,
         pwCurrent:   '',
         pwNew:       '',
         pwNew2:      '',
@@ -199,10 +204,18 @@ function todoApp() {
                 this.api('GET', 'settings'),
                 this.api('GET', 'get_users'),
             ]);
-            if (s.notify_minutes)    this.settingsMinutes  = s.notify_minutes;
-            if (s.telegram_chat_id)  this.settingsTelegram = s.telegram_chat_id;
-            if (s.notify_channel)    this.settingsChannel  = s.notify_channel;
-            if (s.locale)            this.settingsLocale   = s.locale;
+            if (s.notify_minutes)     this.settingsMinutes     = s.notify_minutes;
+            if (s.notify_channel)     this.settingsChannel     = s.notify_channel;
+            if (s.locale)             this.settingsLocale      = s.locale;
+            this.telegramLinked     = !!s.telegram_linked;
+            this.telegramConfigured = !!s.telegram_configured;
+            this.$watch('showSettings', open => {
+                if (open) {
+                    this.refreshTelegramStatus().then(() => {
+                        if (!this.telegramLinked && this.telegramConfigured) this.prepareTelegramLink();
+                    });
+                } else this.stopTelegramPoll();
+            });
             this.allUsers = Array.isArray(users) ? users : [];
             const openId = parseInt(new URLSearchParams(location.search).get('todo') || '0', 10);
             if (openId) {
@@ -634,11 +647,62 @@ function todoApp() {
         },
 
         // ── Settings ──────────────────────────────────────────
+        applyTelegramStatus(s) {
+            if (!s || s.error) return;
+            this.telegramLinked     = !!s.telegram_linked;
+            this.telegramConfigured = !!s.telegram_configured;
+        },
+        async refreshTelegramStatus() {
+            const s = await this.api('GET', 'settings');
+            this.applyTelegramStatus(s);
+            if (this.telegramLinked) {
+                this.telegramLinkPending = false;
+                this.telegramLinkUrl = '';
+                this.stopTelegramPoll();
+            }
+        },
+        async prepareTelegramLink() {
+            this.telegramError = '';
+            const r = await this.api('POST', 'telegram_link');
+            if (r.error) { this.telegramError = r.error; this.telegramLinkUrl = ''; return; }
+            this.telegramLinkUrl = r.url || '';
+        },
+        onTelegramLinkClick() {
+            this.telegramLinkPending = true;
+            this.startTelegramPoll();
+        },
+        startTelegramPoll() {
+            this.stopTelegramPoll();
+            const started = Date.now();
+            this.telegramLinkTimer = setInterval(() => {
+                if (!this.showSettings || Date.now() - started > 120000) {
+                    this.stopTelegramPoll();
+                    this.telegramLinkPending = false;
+                    return;
+                }
+                this.refreshTelegramStatus();
+            }, 2000);
+        },
+        stopTelegramPoll() {
+            if (this.telegramLinkTimer) {
+                clearInterval(this.telegramLinkTimer);
+                this.telegramLinkTimer = null;
+            }
+        },
+        async unlinkTelegram() {
+            this.telegramError = '';
+            const r = await this.api('POST', 'telegram_unlink');
+            if (r.error) { this.telegramError = r.error; return; }
+            this.telegramLinked = false;
+            this.telegramLinkPending = false;
+            this.stopTelegramPoll();
+            if (this.telegramConfigured) await this.prepareTelegramLink();
+        },
+
         async saveSettings() {
             this.settingsError = '';
             const r = await this.api('POST', 'update_settings', {
                 notify_minutes:    parseInt(this.settingsMinutes),
-                telegram_chat_id:  this.settingsTelegram.trim(),
                 notify_channel:    this.settingsChannel,
                 locale:            this.settingsLocale,
             });
@@ -695,20 +759,22 @@ function todoApp() {
             return this.t('recur.' + todo.recur_type) || '';
         },
 
-        // Only opt-in tokens: <datetime>, <+email>, #tag, p1–p4. Never rewrite free text.
+        // Opt-in tokens: <datetime> or "datetime", <+email>, #tag, p1–p4. Never rewrite free text.
         parseTagsInTitle() {
-            const re = /<(\+?)([^>]+)>/g;
+            const re = /<(\+?)([^>]+)>|["“„](\+?)([^"“”„]+)["“”]/g;
             let newTitle = this.form.title;
             let match;
             while ((match = re.exec(this.form.title)) !== null) {
-                if (match[1] === '+') {
-                    const email = match[2].trim();
+                const plus = match[0].startsWith('<') ? match[1] : (match[3] || '');
+                const inner = match[0].startsWith('<') ? match[2] : (match[4] || '');
+                if (plus === '+') {
+                    const email = inner.trim();
                     if (email && !this.form.share_emails.includes(email)) {
                         this.form.share_emails.push(email);
                     }
                     newTitle = newTitle.replace(match[0], '').replace(/  +/g, ' ').trim();
                 } else {
-                    const parsed = parseDateTag(match[2]);
+                    const parsed = parseDateTag(inner);
                     if (parsed) {
                         if (parsed.date) this.form.active_date = parsed.date;
                         if (parsed.time) this.form.active_time = parsed.time;

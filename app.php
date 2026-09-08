@@ -770,28 +770,39 @@ function parse_todo_text(string $text): array {
     $title = trim(preg_replace('/\s+/u', ' ', $title) ?? $title);
 
     if ($date === '' && $time === '') {
-        $trail = extract_trailing_date($title);
-        $title = $trail['title'];
-        $date  = $trail['date'];
-        $time  = $trail['time'];
+        $affix = extract_affix_date($title);
+        $title = $affix['title'];
+        $date  = $affix['date'];
+        $time  = $affix['time'];
     }
 
     return compact('title', 'date', 'time', 'priority', 'emails', 'tags');
 }
 
-function extract_trailing_date(string $title): array {
+function extract_affix_date(string $title): array {
+    $trail = extract_end_date($title, true);
+    if ($trail['date'] !== '' || $trail['time'] !== '') return $trail;
+    return extract_end_date($title, false);
+}
+
+function extract_end_date(string $title, bool $trailing): array {
     $empty = ['title' => $title, 'date' => '', 'time' => ''];
     $words = preg_split('/\s+/u', trim($title), -1, PREG_SPLIT_NO_EMPTY);
     if (!$words) return $empty;
     $max = min(4, count($words));
     for ($n = $max; $n >= 1; $n--) {
-        $suffix = implode(' ', array_slice($words, -$n));
-        $parsed = parse_date_tag($suffix);
+        $chunk = $trailing
+            ? implode(' ', array_slice($words, -$n))
+            : implode(' ', array_slice($words, 0, $n));
+        $parsed = parse_date_tag($chunk);
         if (!$parsed) continue;
         if (trim((string) ($parsed['rest'] ?? '')) !== '') continue;
-        if (is_bare_weekday_phrase($suffix, $parsed)) continue;
+        if (is_bare_weekday_phrase($chunk, $parsed)) continue;
+        $rest = $trailing
+            ? array_slice($words, 0, -$n)
+            : array_slice($words, $n);
         return [
-            'title' => trim(implode(' ', array_slice($words, 0, -$n))),
+            'title' => trim(implode(' ', $rest)),
             'date'  => $parsed['date'],
             'time'  => $parsed['time'],
         ];
@@ -910,7 +921,7 @@ function handle_telegram_update(array $update): void {
         return;
     }
     $loc = $user['locale'] ?? $lang;
-    $reply = t('tg.created', ['title' => $todo['title']], $loc);
+    $reply = t('tg.created', ['title' => htmlspecialchars($todo['title'], ENT_QUOTES, 'UTF-8')], $loc);
     if ($todo['active_at']) {
         $reply .= "\n" . t('tg.due', ['when' => format_notify_when($todo['active_at'], $loc)], $loc);
     }

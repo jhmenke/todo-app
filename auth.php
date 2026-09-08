@@ -93,7 +93,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     </script>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="css/app.css?v=2">
+    <link rel="stylesheet" href="css/app.css?v=6">
 </head>
 <body class="auth-shell min-h-screen flex items-center justify-center p-6 font-sans">
     <div class="auth-card">
@@ -104,7 +104,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 </span>
             </div>
             <div class="brand-name text-2xl"><?= h(APP_NAME) ?></div>
-            <p class="text-sm text-stone-400 mt-1.5"><?= h(t('auth.subtitle')) ?></p>
+            <p class="text-sm text-slate-400 mt-1.5"><?= h(t('auth.subtitle')) ?></p>
         </div>
 
         <?php if ($reg_open): ?>
@@ -148,7 +148,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     value="<?= h($_POST['email'] ?? '') ?>">
             </div>
             <div>
-                <label class="block text-sm font-medium mb-1.5"><?= h(t('auth.password')) ?> <span class="text-stone-400 font-normal"><?= h(t('auth.password_min')) ?></span></label>
+                <label class="block text-sm font-medium mb-1.5"><?= h(t('auth.password')) ?> <span class="text-slate-400 font-normal"><?= h(t('auth.password_min')) ?></span></label>
                 <input type="password" name="password" required autocomplete="new-password"
                     class="w-full">
             </div>

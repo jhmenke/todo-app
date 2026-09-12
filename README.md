@@ -9,11 +9,13 @@ A self-hosted task manager written in PHP 8.1+, SQLite, Alpine.js, and Tailwind 
 - Recurring tasks: daily, weekly, monthly, or a custom interval. Completing a recurring task schedules the next future occurrence.
 - Share a task with other registered users, including inline `<+email>` while composing
 - Comments and file attachments on a task
-- Email and Telegram notifications before a task’s activation time (SMTP, PHP `mail()`, or a Telegram bot)
-- Create tasks by messaging the Telegram bot. Dates can sit at the end of the message (`tomorrow 9am`) or in quotes (`"morgen 9 Uhr"`); `#tag`, `p1`, and `<+email>` still work
+- Email and Telegram notifications before a task’s activation time (SMTP, PHP `mail()`, or a Telegram bot). Due messages include a link to open and complete the task.
+- One Telegram bot from `config.php`. Users tap **Link Telegram** in Settings (no chat ID to copy).
+- Create tasks by messaging the bot. Dates can sit at the start or end (`16 Uhr bügeln`, `tomorrow 9am`) or in quotes (`"morgen 9 Uhr"`); `#tag`, `p1`, and `<+email>` still work. Timed creates attach a `.ics` calendar file on the confirmation.
+- Ask the bot `today?` / `heute?` or `tomorrow?` / `morgen?` for a due-list (overdue is included in today).
 - English and German UI. Dates use `YYYY.MM.DD`. German uses 24-hour time; English uses 12-hour AM/PM.
 - User accounts: registration (can be disabled after the first user), login with a 90-day remember-me cookie, and password change
-- Opt-in datetime tags in titles, for example `"friday 18:00"`, `<morgen 9 Uhr>`, or (Telegram) a date at the end of the message
+- Opt-in datetime tags in titles, for example `"friday 18:00"`, `<morgen 9 Uhr>`, or (Telegram) a date at the start or end of the message
 
 ## Tech stack
 

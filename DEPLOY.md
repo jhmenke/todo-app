@@ -69,7 +69,7 @@ Add:
 * * * * * php /var/www/html/todo-app/cron.php
 ```
 
-This runs every minute and sends Telegram and/or email notifications for todos that activate within each user's lead time. Telegram (and email) include a link to `APP_URL/?todo=ID` so you can open that task in the browser and complete it. Logs go to `cron.log` in the app directory (path override: `CRON_LOG_PATH`). A hard limit of 100 notifications per day (configurable via `CRON_DAILY_LIMIT`) protects against runaway sending.
+This runs every minute: it **always** polls Telegram `getUpdates` (so inbound creates work even when nothing is due), and it sends Telegram and/or email notifications for todos that activate within each user's lead time. Due notifications include a link to `APP_URL/?todo=ID` so you can open that task in the browser and complete it. Create confirmations do not include that link. Logs go to `cron.log` in the app directory (path override: `CRON_LOG_PATH`). A hard limit of 100 notifications per day (configurable via `CRON_DAILY_LIMIT`) protects against runaway sending.
 
 `cron.php` is CLI-only by default and is blocked from the web. If your host can only trigger HTTP cron, set `CRON_SECRET` in `config.php`, allow web access to `cron.php`, and call `cron.php?key=YOUR_SECRET`.
 
@@ -123,6 +123,8 @@ On first request the app adds missing columns and leaves existing data in place:
 | `todos.priority` | `4` (none) |
 | `todos.parent_id` | empty (no sub-tasks) |
 
+A `telegram_link_tokens` table is created if missing (used by **Link Telegram** in Settings). Existing `telegram_chat_id` values stay valid; users do not need to re-link.
+
 Passwords, todos, tags, shares, comments, and files stay as they are. Existing users can switch to Deutsch in Settings. Log in once after deploy (cookie path follows `APP_URL`).
 
 ## File permissions summary
@@ -158,7 +160,9 @@ The cron job notifies the todo owner and anyone the todo is shared with, once pe
 
 ### Create tasks from Telegram
 
-After linking in Settings, message the bot a title. Dates can be trailing (`tomorrow 9am`, `morgen 9 Uhr`) or quoted (`"friday 18:00"`). `#Tag`, `p1`, and `<+email>` still work. `/start` or `/help` shows examples. `/unlink` disconnects the chat.
+After linking in Settings, message the bot a title. Dates can be at the start or end (`16 Uhr bügeln`, `tomorrow 9am`, `morgen 9 Uhr`) or quoted (`"friday 18:00"`). `#Tag`, `p1`, and `<+email>` still work. If the new task has a time, the confirmation includes a `.ics` file (30-minute event) to add to a calendar; there is no “open & complete” link on that ack.
+
+Send `today?` / `heute?` or `tomorrow?` / `morgen?` for an overview of incomplete tasks due that day (`today?` also lists overdue). `/start` or `/help` shows examples. `/unlink` disconnects the chat.
 
 Incoming messages are picked up by the minute cron (`getUpdates`). For instant create, set a webhook (HTTPS required):
 

@@ -138,6 +138,103 @@ function telegram_api(string $method, array $payload = []): ?array {
     return is_array($data) ? $data : null;
 }
 
+function ics_escape(string $s): string {
+    return str_replace(["\\", ";", ",", "\r\n", "\n", "\r"], ['\\\\', '\\;', '\\,', '\\n', '\\n', '\\n'], $s);
+}
+
+function ics_filename(string $title): string {
+    $s = preg_replace('/[^\p{L}\p{N}]+/u', '-', $title) ?? 'task';
+    $s = trim($s, '-');
+    if ($s === '') $s = 'task';
+    if (mb_strlen($s, 'UTF-8') > 40) $s = mb_substr($s, 0, 40, 'UTF-8');
+    return $s . '.ics';
+}
+
+function todo_ics(array $todo): string {
+    $start = new DateTime((string) $todo['active_at']);
+    $end = (clone $start)->modify('+30 minutes');
+    $host = parse_url(APP_URL, PHP_URL_HOST) ?: 'todo-app';
+    $uid = 'todo-' . (int) $todo['id'] . '@' . $host;
+    $lines = [
+        'BEGIN:VCALENDAR',
+        'VERSION:2.0',
+        'PRODID:-//' . APP_NAME . '//EN',
+        'CALSCALE:GREGORIAN',
+        'METHOD:PUBLISH',
+        'BEGIN:VEVENT',
+        'UID:' . $uid,
+        'DTSTAMP:' . gmdate('Ymd\THis\Z'),
+        'DTSTART:' . $start->format('Ymd\THis'),
+        'DTEND:' . $end->format('Ymd\THis'),
+        'SUMMARY:' . ics_escape((string) $todo['title']),
+        'END:VEVENT',
+        'END:VCALENDAR',
+    ];
+    return implode("\r\n", $lines) . "\r\n";
+}
+
+function telegram_send_document(string $chat_id, string $filename, string $bytes, string $caption = ''): bool {
+    if (!TELEGRAM_BOT_TOKEN) return false;
+    $url = 'https://api.telegram.org/bot' . TELEGRAM_BOT_TOKEN . '/sendDocument';
+    $safe_name = str_replace(['"', "\r", "\n"], '', $filename);
+    if (function_exists('curl_init') && class_exists('CURLFile')) {
+        $tmp = tmpfile();
+        if ($tmp === false) return false;
+        fwrite($tmp, $bytes);
+        fflush($tmp);
+        $path = stream_get_meta_data($tmp)['uri'] ?? '';
+        if ($path === '') {
+            fclose($tmp);
+            return false;
+        }
+        $post = [
+            'chat_id' => $chat_id,
+            'document' => new CURLFile($path, 'text/calendar', $safe_name),
+            'disable_web_page_preview' => 'true',
+        ];
+        if ($caption !== '') {
+            $post['caption'] = $caption;
+            $post['parse_mode'] = 'HTML';
+        }
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => $post,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 15,
+        ]);
+        $raw = curl_exec($ch);
+        curl_close($ch);
+        fclose($tmp);
+        $data = is_string($raw) ? json_decode($raw, true) : null;
+        return is_array($data) && !empty($data['ok']);
+    }
+    $boundary = '----todo' . bin2hex(random_bytes(8));
+    $body = '';
+    $fields = [
+        'chat_id' => $chat_id,
+        'disable_web_page_preview' => 'true',
+    ];
+    if ($caption !== '') {
+        $fields['caption'] = $caption;
+        $fields['parse_mode'] = 'HTML';
+    }
+    foreach ($fields as $k => $v) {
+        $body .= "--{$boundary}\r\nContent-Disposition: form-data; name=\"{$k}\"\r\n\r\n{$v}\r\n";
+    }
+    $body .= "--{$boundary}\r\nContent-Disposition: form-data; name=\"document\"; filename=\"{$safe_name}\"\r\n";
+    $body .= "Content-Type: text/calendar\r\n\r\n{$bytes}\r\n--{$boundary}--\r\n";
+    $ctx = stream_context_create(['http' => [
+        'method'  => 'POST',
+        'header'  => "Content-Type: multipart/form-data; boundary={$boundary}\r\n",
+        'content' => $body,
+        'timeout' => 15,
+    ]]);
+    $raw = @file_get_contents($url, false, $ctx);
+    $data = is_string($raw) ? json_decode($raw, true) : null;
+    return is_array($data) && !empty($data['ok']);
+}
+
 function telegram_configured(): bool {
     return TELEGRAM_BOT_TOKEN !== '';
 }
@@ -531,6 +628,11 @@ function format_notify_when(string $active_at, string $locale = 'en'): string {
     return date('Y.m.d g:i A', $ts);
 }
 
+function format_overview_time(string $active_at, string $locale = 'en'): string {
+    $ts = strtotime($active_at) ?: time();
+    return normalize_locale($locale) === 'de' ? date('H:i', $ts) : date('g:i A', $ts);
+}
+
 // ─── Access / files ───────────────────────────────────────────
 function can_access_todo(int $uid, int $todo_id): bool {
     $stmt = db()->prepare('SELECT 1 FROM todos WHERE id=? AND (user_id=? OR EXISTS (SELECT 1 FROM todo_shares ts WHERE ts.todo_id=todos.id AND ts.user_id=?))');
@@ -866,6 +968,65 @@ function create_todo_from_text(int $uid, string $text): ?array {
     ];
 }
 
+function telegram_day_overview(int $uid, string $which, string $locale): string {
+    $locale = normalize_locale($locale);
+    $today = (new DateTime('today'))->format('Y-m-d');
+    $tomorrow = (new DateTime('today'))->modify('+1 day')->format('Y-m-d');
+    $day = $which === 'tomorrow' ? $tomorrow : $today;
+
+    $stmt = db()->prepare("
+        SELECT t.title, t.active_at, t.priority
+        FROM todos t
+        WHERE t.completed_at IS NULL
+          AND t.active_at IS NOT NULL
+          AND date(t.active_at) " . ($which === 'tomorrow' ? '=' : '<=') . " ?
+          AND (t.user_id = ? OR EXISTS (SELECT 1 FROM todo_shares ts WHERE ts.todo_id = t.id AND ts.user_id = ?))
+        ORDER BY t.active_at ASC, t.priority ASC, t.title COLLATE NOCASE ASC
+    ");
+    $stmt->execute([$day, $uid, $uid]);
+    $rows = $stmt->fetchAll();
+
+    $overdue = [];
+    $on_day = [];
+    foreach ($rows as $row) {
+        $date = substr((string) $row['active_at'], 0, 10);
+        if ($which === 'today' && $date < $today) $overdue[] = $row;
+        else $on_day[] = $row;
+    }
+
+    $line = function (array $row, bool $with_date) use ($locale): string {
+        $when = $with_date
+            ? format_notify_when((string) $row['active_at'], $locale)
+            : format_overview_time((string) $row['active_at'], $locale);
+        $title = htmlspecialchars((string) $row['title'], ENT_QUOTES, 'UTF-8');
+        $prio = ((int) $row['priority'] < 4) ? ' P' . (int) $row['priority'] : '';
+        return '• ' . $when . ' ' . $title . $prio;
+    };
+
+    $blocks = [];
+    if ($overdue) {
+        $blocks[] = '<b>' . htmlspecialchars(t('tg.overview_overdue', [], $locale), ENT_QUOTES, 'UTF-8') . '</b>'
+            . "\n" . implode("\n", array_map(fn($r) => $line($r, true), $overdue));
+    }
+    $heading = $which === 'tomorrow' ? t('tg.overview_tomorrow', [], $locale) : t('tg.overview_today', [], $locale);
+    if ($on_day) {
+        $blocks[] = '<b>' . htmlspecialchars($heading, ENT_QUOTES, 'UTF-8') . '</b>'
+            . "\n" . implode("\n", array_map(fn($r) => $line($r, false), $on_day));
+    }
+    if (!$blocks) {
+        return t($which === 'tomorrow' ? 'tg.overview_empty_tomorrow' : 'tg.overview_empty_today', [], $locale);
+    }
+
+    $text = implode("\n\n", $blocks);
+    if (strlen($text) > 3900) {
+        $text = substr($text, 0, 3900);
+        $cut = strrpos($text, "\n");
+        if ($cut !== false) $text = substr($text, 0, $cut);
+        $text .= "\n" . t('tg.overview_more', [], $locale);
+    }
+    return $text;
+}
+
 function telegram_user_by_chat(string $chat_id): ?array {
     $stmt = db()->prepare('SELECT * FROM users WHERE telegram_chat_id=?');
     $stmt->execute([$chat_id]);
@@ -915,6 +1076,11 @@ function handle_telegram_update(array $update): void {
         send_telegram($chat_id, t('tg.unknown', [], $lang));
         return;
     }
+    if (preg_match('/^(today|tomorrow|heute|morgen)\s*\?$/iu', $text, $q)) {
+        $which = in_array(mb_strtolower($q[1], 'UTF-8'), ['tomorrow', 'morgen'], true) ? 'tomorrow' : 'today';
+        send_telegram($chat_id, telegram_day_overview((int) $user['id'], $which, $user['locale'] ?? $lang));
+        return;
+    }
     $todo = create_todo_from_text((int) $user['id'], $text);
     if (!$todo) {
         send_telegram($chat_id, t('tg.empty', [], $lang));
@@ -928,8 +1094,10 @@ function handle_telegram_update(array $update): void {
     if ($todo['priority'] < 4) {
         $reply .= "\nP" . $todo['priority'];
     }
-    $reply .= "\n<a href=\"" . htmlspecialchars(todo_url($todo['id']), ENT_QUOTES, 'UTF-8') . '">'
-        . htmlspecialchars(t('notify.open_task', [], $loc)) . '</a>';
+    if ($todo['active_at']
+        && telegram_send_document($chat_id, ics_filename($todo['title']), todo_ics($todo), $reply)) {
+        return;
+    }
     send_telegram($chat_id, $reply);
 }
 

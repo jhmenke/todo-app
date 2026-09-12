@@ -93,7 +93,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     </script>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="css/app.css?v=6">
+    <link rel="stylesheet" href="css/app.css?v=8">
 </head>
 <body class="auth-shell min-h-screen flex items-center justify-center p-6 font-sans">
     <div class="auth-card">

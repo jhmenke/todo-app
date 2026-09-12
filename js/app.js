@@ -192,6 +192,7 @@ function todoApp() {
         toastTimer:  null,
         undoId:      null,
         undoNextId:  null,
+        todosReq:    0,
         leavingId:   null,
         syncTimer:   null,
 
@@ -251,7 +252,7 @@ function todoApp() {
 
         // ── Load ──────────────────────────────────────────────
         async loadTodos(silent = false) {
-            if (silent && (this.loading || this.leavingId)) return;
+            const req = ++this.todosReq;
             if (!silent) this.loading = true;
             try {
                 const params = { status: this.filterStatus, sort: this.sortBy, dir: this.sortDir };
@@ -263,12 +264,12 @@ function todoApp() {
                     if (this.completedTo)   params.completed_to   = this.completedTo;
                 }
                 const data = await this.api('GET', 'todos', null, params);
-                const list = Array.isArray(data) ? data : [];
-                if (silent && JSON.stringify(list) === JSON.stringify(this.todos)) return;
-                this.todos = list;
+                if (req !== this.todosReq) return;
+                if (!Array.isArray(data)) return;
+                this.todos = data;
                 if (silent && this.drawer) await this.refreshOpenDrawer();
             } finally {
-                if (!silent) this.loading = false;
+                if (!silent && req === this.todosReq) this.loading = false;
             }
         },
 
@@ -565,6 +566,26 @@ function todoApp() {
             await this.loadTodos();
         },
 
+        hideCompletedInView() {
+            return this.filterStatus !== 'completed' && !(this.filterStatus === 'all' && !this.hideCompleted);
+        },
+        removeTodoFromList(id) {
+            const nid = Number(id);
+            this.todos = this.todos.filter(t => Number(t.id) !== nid);
+            this.todos.forEach(t => {
+                if (t.children?.length) {
+                    t.children = t.children.filter(c => Number(c.id) !== nid);
+                }
+            });
+        },
+        prefersReducedMotion() {
+            return typeof window !== 'undefined'
+                && window.matchMedia
+                && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        },
+        sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        },
         async toggleComplete(todo, e) {
             e.preventDefault();
             e.stopPropagation();
@@ -574,26 +595,27 @@ function todoApp() {
                 if (result.error) { this.toast(result.error); return; }
                 this.clearUndo();
                 this.toast(this.t('toast.incomplete'));
-            } else {
+                if (this.drawer?.id === todo.id) this.closeDrawer();
+                await this.loadTodos(true);
+                return;
+            }
+            const result = await this.api('POST', 'complete_todo', { id: todo.id });
+            if (result.error) {
+                this.toast(result.error);
+                return;
+            }
+            this.offerUndo(todo.id, result.next_todo);
+            this.toast(result.next_todo ? this.t('toast.next') : this.t('toast.completed'), 10000, true);
+            todo.completed_at = todo.completed_at || new Date().toISOString().slice(0, 19).replace('T', ' ');
+            const hide = this.hideCompletedInView();
+            if (hide) {
                 this.leavingId = todo.id;
-                const prev = todo.completed_at;
-                todo.completed_at = new Date().toISOString().slice(0, 19).replace('T', ' ');
-                const [result] = await Promise.all([
-                    this.api('POST', 'complete_todo', { id: todo.id }),
-                    this.sleep(280),
-                ]);
-                if (result.error) {
-                    todo.completed_at = prev;
-                    this.leavingId = null;
-                    this.toast(result.error);
-                    return;
-                }
-                this.offerUndo(todo.id, result.next_todo);
-                this.toast(result.next_todo ? this.t('toast.next') : this.t('toast.completed'), 10000, true);
+                if (!this.prefersReducedMotion()) await this.sleep(400);
+                this.removeTodoFromList(todo.id);
+                this.leavingId = null;
             }
             if (this.drawer?.id === todo.id) this.closeDrawer();
-            await this.loadTodos();
-            this.leavingId = null;
+            await this.loadTodos(true);
             if (this.drawer) {
                 const full = await this.api('GET', 'todo', null, { id: this.drawer.id });
                 if (!full.error) this.drawer = full;
@@ -624,9 +646,6 @@ function todoApp() {
                 const full = await this.api('GET', 'todo', null, { id: this.drawer.id });
                 if (!full.error) this.drawer = full;
             }
-        },
-        sleep(ms) {
-            return new Promise(resolve => setTimeout(resolve, ms));
         },
 
         async deleteTodo(id) {

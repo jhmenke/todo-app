@@ -201,10 +201,16 @@
   "tg": {
     "unknown": "Dieser Chat ist nicht verknüpft. In der App unter Einstellungen auf Telegram verknüpfen tippen.",
     "linked": "Verknüpft mit {email}. Sende eine Aufgabe als Nachricht.",
-    "help": "Datum am Ende der Nachricht oder in Anführungszeichen:\nMilch kaufen morgen 9 Uhr\nBuy milk \"tomorrow 9am\"\n#Tag\np1\n&lt;+email@…&gt;\n\nBeispiel:\nMilch kaufen freitag 18:00 p2 #Einkauf",
+    "help": "Datum am Ende der Nachricht oder in Anführungszeichen:\nMilch kaufen morgen 9 Uhr\nBuy milk \"tomorrow 9am\"\n#Tag\np1\n&lt;+email@…&gt;\n\nBeispiel:\nMilch kaufen freitag 18:00 p2 #Einkauf\n\nÜbersicht:\nheute?  oder  today?\nmorgen?  oder  tomorrow?",
     "created": "Erstellt: {title}",
     "due": "Fällig {when}",
     "empty": "Sende einen Aufgabentitel, oder /help",
+    "overview_today": "Heute",
+    "overview_tomorrow": "Morgen",
+    "overview_overdue": "Überfällig",
+    "overview_empty_today": "Heute nichts fällig.",
+    "overview_empty_tomorrow": "Morgen nichts fällig.",
+    "overview_more": "…und weitere",
     "link_expired": "Der Link ist abgelaufen. In den Einstellungen erneut auf Telegram verknüpfen tippen.",
     "unlinked": "Telegram getrennt. Du bekommst hier keine Benachrichtigungen mehr."
   },

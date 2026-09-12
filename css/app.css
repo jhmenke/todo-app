@@ -330,25 +330,23 @@ code {
     align-items: flex-start;
     gap: 0.8rem;
     cursor: pointer;
-    transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease, opacity 0.2s ease;
+    transition: box-shadow 0.2s ease, border-color 0.2s ease;
     box-shadow: none;
-    animation: card-in 0.32s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .todo-card:hover {
     border-color: #d1d5db;
     box-shadow: var(--shadow);
 }
 .todo-card:active { transform: scale(0.99); }
-.todo-card.leaving {
-    animation: card-out 0.28s ease forwards;
+.todo-stack,
+.todo-card {
+    transition: opacity 0.4s ease, transform 0.4s ease;
+}
+.todo-stack.is-leaving,
+.todo-card.is-leaving {
+    opacity: 0;
+    transform: translateX(18px);
     pointer-events: none;
-}
-@keyframes card-in {
-    from { opacity: 0; transform: translateY(10px) scale(0.98); }
-    to   { opacity: 1; transform: none; }
-}
-@keyframes card-out {
-    to { opacity: 0; transform: translateX(28px) scale(0.97); }
 }
 .todo-title {
     font-weight: 600;
@@ -741,5 +739,4 @@ code {
         animation: none !important;
         transition: none !important;
     }
-    .todo-card.leaving { opacity: 0.4; }
 }

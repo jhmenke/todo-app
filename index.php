@@ -27,7 +27,7 @@ $user = require_auth();
     </script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-    <link rel="stylesheet" href="css/app.css?v=6">
+    <link rel="stylesheet" href="css/app.css?v=8">
 </head>
 <body class="app-shell h-screen flex flex-col overflow-hidden font-sans" x-data="todoApp()">
 
@@ -118,7 +118,8 @@ $user = require_auth();
                 </div>
                 <div class="search-wrap">
                     <svg class="search-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-4.35-4.35M11 18a7 7 0 100-14 7 7 0 000 14z"/></svg>
-                    <input type="search" x-model="searchQuery" @input="onSearchInput()" @keydown.escape="clearSearch()"
+                    <input type="search" name="todo_filter_q" x-model="searchQuery" @input="onSearchInput()" @keydown.escape="clearSearch()"
+                        autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
                         :placeholder="t('list.search')" class="search-input" :aria-label="t('list.search')">
                     <button type="button" class="search-clear" x-show="searchQuery" @click="clearSearch()" :aria-label="t('list.clear_search')">×</button>
                 </div>
@@ -157,11 +158,11 @@ $user = require_auth();
             <!-- Completed tab: date range filter -->
             <div x-show="filterStatus==='completed'" class="flex items-center gap-2 mb-4 flex-wrap">
                 <span class="text-xs text-slate-400 font-medium" x-text="t('nav.completed')"></span>
-                <input type="date" x-model="completedFrom" @change="loadTodos()"
-                    class="px-2 py-1 text-xs">
+                <input type="date" name="todo_completed_from" x-model="completedFrom" @change="loadTodos()"
+                    autocomplete="off" class="px-2 py-1 text-xs">
                 <span class="text-xs text-slate-400">—</span>
-                <input type="date" x-model="completedTo" @change="loadTodos()"
-                    class="px-2 py-1 text-xs">
+                <input type="date" name="todo_completed_to" x-model="completedTo" @change="loadTodos()"
+                    autocomplete="off" class="px-2 py-1 text-xs">
                 <button x-show="completedFrom || completedTo"
                     @click="completedFrom=''; completedTo=''; loadTodos()"
                     class="btn-ghost text-xs" x-text="t('list.clear')"></button>
@@ -182,10 +183,10 @@ $user = require_auth();
 
             <!-- Todo list -->
             <div class="space-y-2.5" x-show="!loading">
-                <template x-for="todo in todos" :key="todo.id">
-                    <div class="todo-stack">
+                <template x-for="todo in todos" :key="'todo-'+todo.id">
+                    <div class="todo-stack" :class="{ 'is-leaving': leavingId === todo.id }">
                     <div class="todo-card group"
-                         :class="{ 'todo-completed': todo.completed_at, leaving: leavingId === todo.id }"
+                         :class="{ 'todo-completed': todo.completed_at }"
                          @click="openDrawer(todo)">
 
                         <input type="checkbox" class="todo-check mt-0.5"
@@ -204,7 +205,7 @@ $user = require_auth();
                             <p x-show="todo.parent_title" class="text-xs text-slate-400 mt-0.5">
                                 <span x-text="t('list.under')"></span> <span x-text="todo.parent_title"></span>
                             </p>
-                            <div class="flex flex-wrap gap-1 mt-1.5" x-show="todo.tags.length">
+                            <div class="flex flex-wrap gap-1 mt-1.5" x-show="todo.tags && todo.tags.length">
                                 <template x-for="tag in todo.tags" :key="tag.id">
                                     <span class="tag-pill" :style="`background:${tag.color}`" x-text="tag.name"></span>
                                 </template>
@@ -237,9 +238,9 @@ $user = require_auth();
                         </div>
                     </div>
 
-                    <template x-for="child in (todo.children || [])" :key="child.id">
+                    <template x-for="child in (todo.children || [])" :key="'child-'+child.id">
                         <div class="todo-card todo-child group"
-                             :class="{ 'todo-completed': child.completed_at, leaving: leavingId === child.id }"
+                             :class="{ 'todo-completed': child.completed_at, 'is-leaving': leavingId === child.id }"
                              @click="openDrawer(child)">
                             <input type="checkbox" class="todo-check mt-0.5"
                                 :checked="!!child.completed_at"
@@ -737,6 +738,6 @@ $user = require_auth();
     <template x-if="undoId"><div class="toast-bar"></div></template>
 </div>
 
-<script src="js/app.js?v=12"></script>
+<script src="js/app.js?v=15"></script>
 </body>
 </html>

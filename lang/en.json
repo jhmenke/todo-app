@@ -201,10 +201,16 @@
   "tg": {
     "unknown": "This chat is not linked. Open Settings in the app and tap Link Telegram.",
     "linked": "Linked to {email}. Send a task as a message.",
-    "help": "Dates at the end of the message, or in quotes:\nBuy milk tomorrow 9am\nMilch kaufen \"morgen 9 Uhr\"\n#Tag\np1\n&lt;+email@…&gt;\n\nExample:\nBuy milk friday 18:00 p2 #Errands",
+    "help": "Dates at the end of the message, or in quotes:\nBuy milk tomorrow 9am\nMilch kaufen \"morgen 9 Uhr\"\n#Tag\np1\n&lt;+email@…&gt;\n\nExample:\nBuy milk friday 18:00 p2 #Errands\n\nOverview:\ntoday?  or  heute?\ntomorrow?  or  morgen?",
     "created": "Created: {title}",
     "due": "Due {when}",
     "empty": "Send a task title, or /help",
+    "overview_today": "Today",
+    "overview_tomorrow": "Tomorrow",
+    "overview_overdue": "Overdue",
+    "overview_empty_today": "Nothing due today.",
+    "overview_empty_tomorrow": "Nothing due tomorrow.",
+    "overview_more": "…and more",
     "link_expired": "That link expired. Open Settings and tap Link Telegram again.",
     "unlinked": "Telegram unlinked. You will no longer get notifications here."
   },

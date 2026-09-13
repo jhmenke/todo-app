@@ -7,11 +7,11 @@ A self-hosted task manager written in PHP 8.1+, SQLite, Alpine.js, and Tailwind 
 - Create, edit, complete, and delete tasks, including subtasks and priorities
 - Color-coded tags for grouping work
 - Recurring tasks: daily, weekly, monthly, or a custom interval. Completing a recurring task schedules the next future occurrence.
-- Share a task with other registered users, including inline `<+email>` while composing
+- Share a task with other registered users. Each person can set a short name in Settings (Peter, Lisa); mention them as `+Peter` in Telegram or in the title field. `<+email>` still works.
 - Comments and file attachments on a task
 - Email and Telegram notifications before a task’s activation time (SMTP, PHP `mail()`, or a Telegram bot). Due messages include a link to open and complete the task.
 - One Telegram bot from `config.php`. Users tap **Link Telegram** in Settings (no chat ID to copy). **Enable instant replies** in Settings turns on a Telegram webhook (HTTPS; no SSH). Keep the minute cron for due notifications.
-- Create tasks by messaging the bot. Dates can sit at the start or end (`16 Uhr bügeln`, `tomorrow 9am`) or in quotes (`"morgen 9 Uhr"`); `#tag`, `p1`, and `<+email>` still work. Timed creates attach a `.ics` calendar file on the confirmation.
+- Create tasks by messaging the bot. Dates can sit at the start or end (`16 Uhr bügeln`, `tomorrow 9am`) or in quotes (`"morgen 9 Uhr"`); `#tag`, `p1`, `+Peter`, and `<+email>` still work. Timed creates attach a `.ics` calendar file on the confirmation.
 - Ask the bot `today?` / `heute?` or `tomorrow?` / `morgen?` for a due-list (overdue is included in today).
 - English and German UI. Dates use `YYYY.MM.DD`. German uses 24-hour time; English uses 12-hour AM/PM.
 - User accounts: registration (can be disabled after the first user), login with a 90-day remember-me cookie, password change in Settings, and **Forgot password?** on the login page (email plus Telegram if the account is linked)

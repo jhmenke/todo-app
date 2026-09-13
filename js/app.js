@@ -175,6 +175,7 @@ function todoApp() {
         settingsChannel:  'telegram',
         settingsLocale:   (typeof window !== 'undefined' && window.LOCALE) ? window.LOCALE : 'en',
         settingsError:    '',
+        settingsDisplayName: '',
         telegramLinked:      false,
         telegramConfigured:  false,
         telegramLinkPending: false,
@@ -210,6 +211,7 @@ function todoApp() {
             if (s.notify_minutes)     this.settingsMinutes     = s.notify_minutes;
             if (s.notify_channel)     this.settingsChannel     = s.notify_channel;
             if (s.locale)             this.settingsLocale      = s.locale;
+            if (s.display_name != null) this.settingsDisplayName = s.display_name;
             this.applyTelegramStatus(s);
             this.$watch('showSettings', open => {
                 if (open) {
@@ -744,6 +746,7 @@ function todoApp() {
                 notify_minutes:    parseInt(this.settingsMinutes),
                 notify_channel:    this.settingsChannel,
                 locale:            this.settingsLocale,
+                display_name:      this.settingsDisplayName.trim(),
             });
             if (r.error) { this.settingsError = r.error; return; }
             if (this.settingsLocale && this.settingsLocale !== window.LOCALE) {
@@ -798,7 +801,12 @@ function todoApp() {
             return this.t('recur.' + todo.recur_type) || '';
         },
 
-        // Opt-in tokens: <datetime> or "datetime", <+email>, #tag, p1–p4. Never rewrite free text.
+        userLabel(u) {
+            const n = (u && u.display_name) ? String(u.display_name).trim() : '';
+            return n || (u && u.email) || '';
+        },
+
+        // Opt-in tokens: <datetime> or "datetime", <+email>, +Name, #tag, p1–p4.
         parseTagsInTitle() {
             const re = /<(\+?)([^>]+)>|["“„](\+?)([^"“”„]+)["“”]/g;
             let newTitle = this.form.title;
@@ -807,9 +815,9 @@ function todoApp() {
                 const plus = match[0].startsWith('<') ? match[1] : (match[3] || '');
                 const inner = match[0].startsWith('<') ? match[2] : (match[4] || '');
                 if (plus === '+') {
-                    const email = inner.trim();
-                    if (email && !this.form.share_emails.includes(email)) {
-                        this.form.share_emails.push(email);
+                    const who = inner.trim();
+                    if (who && !this.form.share_emails.includes(who)) {
+                        this.form.share_emails.push(who);
                     }
                     newTitle = newTitle.replace(match[0], '').replace(/  +/g, ' ').trim();
                 } else {
@@ -828,19 +836,30 @@ function todoApp() {
                 newTitle = newTitle.replace(/(?:^|\s)p[1-4](?=\s|$)/gi, ' ').replace(/\s+/g, ' ').trim();
             }
 
+            const plus = [...newTitle.matchAll(/(?:^|\s)\+([^\s+]+)/g)];
+            for (const m of plus) {
+                const who = m[1].trim();
+                if (who && !this.form.share_emails.includes(who)) this.form.share_emails.push(who);
+            }
+            if (plus.length) newTitle = newTitle.replace(/(?:^|\s)\+[^\s+]+/g, ' ').replace(/\s+/g, ' ').trim();
+
             if (newTitle !== this.form.title) this.form.title = newTitle;
             this.updateShareDropdown();
             this.updateTagDropdown();
         },
 
-        // Show user dropdown when title contains an incomplete <+... (no closing >)
         updateShareDropdown() {
-            const m = this.form.title.match(/<\+([^>]*)$/);
+            const angled = this.form.title.match(/<\+([^>]*)$/);
+            const bare = !angled ? this.form.title.match(/(?:^|\s)\+([^\s+]*)$/) : null;
+            const m = angled || bare;
             if (m !== null) {
                 const q = m[1].toLowerCase();
-                this.shareDropdown = this.allUsers.filter(u =>
-                    u.email.toLowerCase().includes(q) && !this.form.share_emails.includes(u.email)
-                );
+                this.shareDropdown = this.allUsers.filter(u => {
+                    const label = this.userLabel(u).toLowerCase();
+                    const email = (u.email || '').toLowerCase();
+                    const taken = this.form.share_emails.includes(u.email) || (u.display_name && this.form.share_emails.includes(u.display_name));
+                    return !taken && (label.includes(q) || email.includes(q));
+                });
             } else {
                 this.shareDropdown = [];
             }
@@ -863,7 +882,7 @@ function todoApp() {
                 if (sd) {
                     e.preventDefault();
                     const i = this.shareDropdownIndex >= 0 ? this.shareDropdownIndex : 0;
-                    this.selectShareUser(this.shareDropdown[i].email);
+                    this.selectShareUser(this.userLabel(this.shareDropdown[i]));
                 } else if (td) {
                     e.preventDefault();
                     const i = this.tagDropdownIndex >= 0 ? this.tagDropdownIndex : 0;
@@ -896,11 +915,13 @@ function todoApp() {
         },
 
         // Called when user clicks a name in the share dropdown
-        selectShareUser(email) {
-            // Remove the incomplete <+... from the title
-            this.form.title = this.form.title.replace(/<\+[^>]*$/, '').replace(/  +/g, ' ').trim();
-            if (!this.form.share_emails.includes(email)) {
-                this.form.share_emails.push(email);
+        selectShareUser(who) {
+            this.form.title = this.form.title
+                .replace(/<\+[^>]*$/, '')
+                .replace(/(?:^|\s)\+[^\s+]*$/, ' ')
+                .replace(/\s+/g, ' ').trim();
+            if (who && !this.form.share_emails.includes(who)) {
+                this.form.share_emails.push(who);
             }
             this.shareDropdown = [];
         },

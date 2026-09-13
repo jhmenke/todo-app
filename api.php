@@ -299,7 +299,7 @@ function get_shares(int $uid): never {
     $todo_id = (int)($_GET['todo_id'] ?? 0);
     $todo    = fetch_todo_raw($uid, $todo_id);
     if (!$todo || !$todo['is_owner']) json_out(['error' => t('error.not_found')], 404);
-    $stmt = db()->prepare('SELECT ts.user_id, u.email, ts.shared_at FROM todo_shares ts JOIN users u ON u.id=ts.user_id WHERE ts.todo_id=?');
+    $stmt = db()->prepare('SELECT ts.user_id, u.email, u.display_name, ts.shared_at FROM todo_shares ts JOIN users u ON u.id=ts.user_id WHERE ts.todo_id=?');
     $stmt->execute([$todo_id]);
     json_out($stmt->fetchAll());
 }
@@ -310,18 +310,16 @@ function add_share(int $uid, array $b): never {
     $todo    = fetch_todo_raw($uid, $todo_id);
     if (!$todo || !$todo['is_owner']) json_out(['error' => t('error.not_owner')], 403);
 
-    $stmt = db()->prepare('SELECT id, email FROM users WHERE email=?');
-    $stmt->execute([$email]);
-    $target = $stmt->fetch();
+    $target = find_share_user($uid, $email);
     if (!$target) json_out(['error' => t('error.no_account')], 404);
-    if ($target['id'] === $uid) json_out(['error' => t('error.share_self')], 422);
+    if ((int) $target['id'] === $uid) json_out(['error' => t('error.share_self')], 422);
 
     try {
         db()->prepare('INSERT INTO todo_shares (todo_id, user_id) VALUES (?,?)')->execute([$todo_id, $target['id']]);
     } catch (PDOException) {
         json_out(['error' => t('error.already_shared')], 422);
     }
-    json_out(['user_id' => $target['id'], 'email' => $target['email'], 'shared_at' => date('Y-m-d H:i:s')]);
+    json_out(['user_id' => $target['id'], 'email' => $target['email'], 'display_name' => $target['display_name'] ?? '', 'shared_at' => date('Y-m-d H:i:s')]);
 }
 
 function remove_share(int $uid, array $b): never {
@@ -334,7 +332,7 @@ function remove_share(int $uid, array $b): never {
 }
 
 function get_users(int $uid): never {
-    $stmt = db()->prepare('SELECT id, email FROM users WHERE id != ? ORDER BY email ASC');
+    $stmt = db()->prepare('SELECT id, email, display_name FROM users WHERE id != ? ORDER BY lower(COALESCE(display_name, email)) ASC');
     $stmt->execute([$uid]);
     json_out($stmt->fetchAll());
 }
@@ -350,7 +348,7 @@ function find_user(int $uid): never {
 
 // ─── Settings ─────────────────────────────────────────────────
 function get_settings(int $uid): never {
-    $stmt = db()->prepare('SELECT id, email, notify_minutes, telegram_chat_id, notify_channel, locale FROM users WHERE id=?');
+    $stmt = db()->prepare('SELECT id, email, display_name, notify_minutes, telegram_chat_id, notify_channel, locale FROM users WHERE id=?');
     $stmt->execute([$uid]);
     $row = $stmt->fetch();
     if (!$row) json_out(['error' => t('error.not_found')], 404);
@@ -366,11 +364,17 @@ function update_settings(int $uid, array $b): never {
     $minutes  = max(1, min(1440, (int)($b['notify_minutes'] ?? 5)));
     $channel  = in_array($b['notify_channel'] ?? '', ['telegram','email','both']) ? $b['notify_channel'] : 'telegram';
     $locale   = normalize_locale($b['locale'] ?? current_locale());
-    db()->prepare('UPDATE users SET notify_minutes=?, notify_channel=?, locale=? WHERE id=?')
-        ->execute([$minutes, $channel, $locale, $uid]);
+    $name     = normalize_display_name((string) ($b['display_name'] ?? ''));
+    if ($name === false) json_out(['error' => t('error.display_name_invalid')], 422);
+    try {
+        db()->prepare('UPDATE users SET notify_minutes=?, notify_channel=?, locale=?, display_name=? WHERE id=?')
+            ->execute([$minutes, $channel, $locale, $name, $uid]);
+    } catch (PDOException) {
+        json_out(['error' => t('error.display_name_taken')], 422);
+    }
     $_SESSION['user']['notify_minutes'] = $minutes;
     set_locale($locale);
-    json_out(['ok' => true, 'notify_minutes' => $minutes, 'locale' => $locale]);
+    json_out(['ok' => true, 'notify_minutes' => $minutes, 'locale' => $locale, 'display_name' => $name]);
 }
 
 function telegram_link(int $uid): never {
@@ -433,6 +437,7 @@ function todo_select_sql(): string {
     return "
         SELECT t.*,
                u.email AS owner_email,
+               u.display_name AS owner_display_name,
                (t.user_id = :uid) AS is_owner,
                (SELECT COUNT(*) FROM comments c WHERE c.todo_id = t.id) AS comment_count,
                GROUP_CONCAT(tg.id || '|' || tg.name || '|' || tg.color, ';;') AS tags_raw
@@ -563,7 +568,7 @@ function format_todo(array $row): array {
 
 function fetch_todo(int $uid, int $id): ?array {
     $stmt = db()->prepare("
-        SELECT t.*, u.email AS owner_email, (t.user_id = :uid) AS is_owner,
+        SELECT t.*, u.email AS owner_email, u.display_name AS owner_display_name, (t.user_id = :uid) AS is_owner,
                (SELECT COUNT(*) FROM comments c WHERE c.todo_id = t.id) AS comment_count,
                GROUP_CONCAT(tg.id || '|' || tg.name || '|' || tg.color, ';;') AS tags_raw
         FROM todos t

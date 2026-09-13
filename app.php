@@ -112,9 +112,13 @@ function db_init(PDO $db): void {
         "ALTER TABLE todos ADD COLUMN priority INTEGER NOT NULL DEFAULT 4",
         "ALTER TABLE todos ADD COLUMN parent_id INTEGER REFERENCES todos(id) ON DELETE CASCADE",
         "ALTER TABLE users ADD COLUMN locale TEXT NOT NULL DEFAULT 'en'",
+        "ALTER TABLE users ADD COLUMN display_name TEXT",
     ] as $sql) {
         try { $db->exec($sql); } catch (PDOException) {}
     }
+    try {
+        $db->exec("CREATE UNIQUE INDEX IF NOT EXISTS users_display_name_lower ON users (lower(display_name)) WHERE display_name IS NOT NULL AND display_name != ''");
+    } catch (PDOException) {}
 }
 
 // ─── Telegram ─────────────────────────────────────────────────
@@ -977,6 +981,14 @@ function parse_todo_text(string $text): array {
         $title = preg_replace('/(?:^|(?<=\s))#[^\s#]+/u', ' ', $title) ?? $title;
     }
 
+    if (preg_match_all('/(?:^|(?<=\s))\+([^\s+]+)/u', $title, $sm)) {
+        foreach ($sm[1] as $name) {
+            $name = trim($name);
+            if ($name !== '' && !in_array($name, $emails, true)) $emails[] = $name;
+        }
+        $title = preg_replace('/(?:^|(?<=\s))\+[^\s+]+/u', ' ', $title) ?? $title;
+    }
+
     $title = trim(preg_replace('/\s+/u', ' ', $title) ?? $title);
 
     if ($date === '' && $time === '') {
@@ -1026,6 +1038,31 @@ function is_bare_weekday_phrase(string $raw, array $parsed): bool {
     return (bool) preg_match('/^(su|sunday|sonntag|mo|monday|montag|di|tue|tuesday|dienstag|mi|wed|wednesday|mittwoch|do|thu|thursday|donnerstag|fr|friday|freitag|sa|saturday|samstag)$/u', $s);
 }
 
+function normalize_display_name(string $s): string|false|null {
+    $s = trim($s);
+    if ($s === '') return null;
+    if (str_contains($s, '@') || !preg_match('/^[\p{L}\p{N}_-]{1,32}$/u', $s)) return false;
+    return $s;
+}
+
+function share_label(array $user): string {
+    $name = trim((string) ($user['display_name'] ?? ''));
+    return $name !== '' ? $name : (string) ($user['email'] ?? '');
+}
+
+function find_share_user(int $uid, string $who): ?array {
+    $who = trim($who);
+    if ($who === '') return null;
+    if (str_contains($who, '@')) {
+        $stmt = db()->prepare('SELECT id, email, display_name FROM users WHERE email=? AND id!=?');
+        $stmt->execute([$who, $uid]);
+    } else {
+        $stmt = db()->prepare('SELECT id, email, display_name FROM users WHERE lower(display_name)=lower(?) AND display_name != \'\' AND id!=?');
+        $stmt->execute([$who, $uid]);
+    }
+    return $stmt->fetch() ?: null;
+}
+
 function find_or_create_tag(int $uid, string $name): int {
     $stmt = db()->prepare('SELECT id FROM tags WHERE user_id=? AND lower(name)=lower(?)');
     $stmt->execute([$uid, $name]);
@@ -1054,16 +1091,14 @@ function create_todo_from_text(int $uid, string $text): ?array {
         foreach ($tag_ids as $tid) $ins->execute([$todo_id, $tid]);
     }
     $share_ok = $share_fail = [];
-    foreach ($p['emails'] as $email) {
-        $u = db()->prepare('SELECT id FROM users WHERE email=? AND id!=?');
-        $u->execute([$email, $uid]);
-        $oid = $u->fetchColumn();
-        if (!$oid) { $share_fail[] = $email; continue; }
+    foreach ($p['emails'] as $who) {
+        $target = find_share_user($uid, $who);
+        if (!$target) { $share_fail[] = $who; continue; }
         try {
-            db()->prepare('INSERT INTO todo_shares (todo_id, user_id) VALUES (?,?)')->execute([$todo_id, $oid]);
-            $share_ok[] = $email;
+            db()->prepare('INSERT INTO todo_shares (todo_id, user_id) VALUES (?,?)')->execute([$todo_id, (int) $target['id']]);
+            $share_ok[] = share_label($target);
         } catch (PDOException) {
-            $share_fail[] = $email;
+            $share_fail[] = $who;
         }
     }
     return [
@@ -1201,6 +1236,9 @@ function handle_telegram_update(array $update): void {
     }
     if ($todo['priority'] < 4) {
         $reply .= "\nP" . $todo['priority'];
+    }
+    if (!empty($todo['share_ok'])) {
+        $reply .= "\n" . t('tg.shared', ['names' => htmlspecialchars(implode(', ', $todo['share_ok']), ENT_QUOTES, 'UTF-8')], $loc);
     }
     if ($todo['active_at']
         && telegram_send_document($chat_id, ics_filename($todo['title']), todo_ics($todo), $reply)) {

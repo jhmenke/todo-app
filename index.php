@@ -425,16 +425,16 @@ $user = require_auth();
                     <div class="flex items-center justify-between py-2">
                         <div class="flex items-center gap-2">
                             <div class="avatar avatar-owner"
-                                x-text="drawer.owner_email?.charAt(0).toUpperCase()"></div>
-                            <span class="text-sm" x-text="drawer.owner_email"></span>
+                                x-text="(drawer.owner_display_name || drawer.owner_email || '?').charAt(0).toUpperCase()"></div>
+                            <span class="text-sm" x-text="drawer.owner_display_name || drawer.owner_email"></span>
                         </div>
                         <span class="text-xs font-semibold text-accent" x-text="t('share.owner')"></span>
                     </div>
                     <template x-for="s in shares" :key="s.user_id">
                         <div class="flex items-center justify-between py-2">
                             <div class="flex items-center gap-2">
-                                <div class="avatar" x-text="s.email.charAt(0).toUpperCase()"></div>
-                                <span class="text-sm" x-text="s.email"></span>
+                                <div class="avatar" x-text="(s.display_name || s.email || '?').charAt(0).toUpperCase()"></div>
+                                <span class="text-sm" x-text="s.display_name || s.email"></span>
                             </div>
                             <button @click="removeShare(s.user_id)" class="text-xs text-red-400 hover:text-red-600 transition-colors" x-text="t('share.remove')"></button>
                         </div>
@@ -444,8 +444,8 @@ $user = require_auth();
                 <div class="px-5 py-3" style="border-top:1px solid var(--line)">
                     <p x-show="shareError" class="text-xs text-red-500 mb-2" x-text="shareError"></p>
                     <div class="flex gap-2">
-                        <input type="email" x-model="shareEmail" :placeholder="t('share.placeholder')"
-                            class="flex-1 text-sm"
+                        <input type="text" x-model="shareEmail" :placeholder="t('share.placeholder')"
+                            class="flex-1 text-sm" autocomplete="off"
                             @keydown.enter="addShare()">
                         <button @click="addShare()" class="btn-primary" x-text="t('share.button')"></button>
                     </div>
@@ -483,11 +483,12 @@ $user = require_auth();
                     <div x-show="shareDropdown.length > 0"
                          class="absolute top-full left-0 right-0 z-20 mt-1 bg-[var(--surface)] border rounded-xl shadow-lg overflow-hidden" style="border-color:var(--line)">
                         <template x-for="(u, i) in shareDropdown" :key="u.id">
-                            <button type="button" @click="selectShareUser(u.email)"
+                            <button type="button" @click="selectShareUser(userLabel(u))"
                                 :class="i === shareDropdownIndex ? 'bg-accent-soft' : 'hover:bg-accent-soft'"
                                 class="w-full flex items-center gap-2.5 px-3 py-2 text-sm transition-colors text-left">
-                                <span class="avatar" x-text="u.email.charAt(0).toUpperCase()"></span>
-                                <span x-text="u.email"></span>
+                                <span class="avatar" x-text="userLabel(u).charAt(0).toUpperCase()"></span>
+                                <span x-text="userLabel(u)"></span>
+                                <span class="text-xs text-slate-400 truncate" x-show="u.display_name" x-text="u.email"></span>
                             </button>
                         </template>
                     </div>
@@ -521,7 +522,7 @@ $user = require_auth();
                 <p class="text-xs text-slate-400 mt-1.5">
                     <code>&lt;morgen 9 Uhr&gt;</code>
                     <code>&lt;friday 18:00&gt;</code>
-                    <code>&lt;+email&gt;</code> <span x-text="t('form.hint_share')"></span>
+                    <code>+Peter</code> <span x-text="t('form.hint_share')"></span>
                     · <code>#Tag</code>
                     · <code>p1</code>
                 </p>
@@ -648,6 +649,13 @@ $user = require_auth();
         </div>
         <div class="px-6 py-5 space-y-6">
             <div>
+                <label class="block text-sm font-medium mb-1" x-text="t('settings.display_name')"></label>
+                <input type="text" x-model="settingsDisplayName" maxlength="32" autocomplete="off"
+                    :placeholder="t('settings.display_name_placeholder')" class="w-full">
+                <p class="text-xs text-slate-400 mt-1.5" x-text="t('settings.display_name_help')"></p>
+            </div>
+
+            <div>
                 <label class="block text-sm font-medium mb-2" x-text="t('settings.language')"></label>
                 <div class="flex gap-2">
                     <label class="flex items-center gap-2 cursor-pointer text-sm">
@@ -749,6 +757,6 @@ $user = require_auth();
     <template x-if="undoId"><div class="toast-bar"></div></template>
 </div>
 
-<script src="js/app.js?v=16"></script>
+<script src="js/app.js?v=17"></script>
 </body>
 </html>

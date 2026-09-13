@@ -121,6 +121,7 @@ On first request the app adds missing columns and leaves existing data in place:
 | `users.telegram_chat_id` | empty |
 | `users.notify_channel` | `telegram` (email is still used if Telegram is not configured) |
 | `users.locale` | `en` |
+| `users.display_name` | empty (set a short name in Settings to use `+Peter` when sharing) |
 | `todos.priority` | `4` (none) |
 | `todos.parent_id` | empty (no sub-tasks) |
 

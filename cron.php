@@ -49,6 +49,7 @@ $sql = "
         u.id          AS recipient_id,
         u.email       AS recipient_email,
         u_owner.email AS owner_email,
+        u_owner.display_name AS owner_name,
         u.notify_minutes,
         u.telegram_chat_id,
         u.notify_channel,
@@ -87,8 +88,9 @@ foreach ($rows as $row) {
     $active   = format_notify_when($row['active_at'], $loc);
     $recurKey = $row['recur_type'] ? 'recur.' . $row['recur_type'] : '';
     $recur    = $row['recur_type'] ? ' (' . t('notify.recurring', ['type' => t($recurKey, [], $loc)], $loc) . ')' : '';
+    $ownerLabel = trim((string) ($row['owner_name'] ?? '')) !== '' ? $row['owner_name'] : $row['owner_email'];
     $shared   = ($row['recipient_email'] !== $row['owner_email'])
-        ? ' — ' . t('notify.shared_by', ['email' => $row['owner_email']], $loc) : '';
+        ? ' — ' . t('notify.shared_by', ['email' => $ownerLabel], $loc) : '';
     $notified = false;
     $link     = todo_url((int) $row['todo_id']);
     $linkLabel = t('notify.open_task', [], $loc);

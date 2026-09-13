@@ -696,6 +696,17 @@ $user = require_auth();
                         <span x-show="telegramLinkPending" class="text-xs text-slate-400" x-text="t('settings.telegram_waiting')"></span>
                     </div>
                     <p class="text-xs text-slate-400 leading-relaxed" x-text="t('settings.telegram_help')"></p>
+                    <div class="pt-1">
+                        <div x-show="telegramWebhook" class="flex items-center gap-2 flex-wrap">
+                            <span class="text-sm font-medium text-emerald-700" x-text="t('settings.telegram_instant_on')"></span>
+                            <button type="button" @click="setTelegramWebhook(false)" class="btn-ghost" x-text="t('settings.telegram_instant_off')"></button>
+                        </div>
+                        <div x-show="!telegramWebhook">
+                            <button type="button" @click="setTelegramWebhook(true)" class="btn-primary" x-text="t('settings.telegram_instant')"></button>
+                        </div>
+                        <p class="text-xs text-slate-400 leading-relaxed mt-1.5" x-text="t('settings.telegram_instant_help')"></p>
+                        <p x-show="telegramWebhookError" class="text-xs text-red-500 mt-1" x-text="telegramWebhookError"></p>
+                    </div>
                 </div>
                 <p x-show="telegramError" class="text-xs text-red-500 mt-1" x-text="telegramError"></p>
             </div>
@@ -738,6 +749,6 @@ $user = require_auth();
     <template x-if="undoId"><div class="toast-bar"></div></template>
 </div>
 
-<script src="js/app.js?v=15"></script>
+<script src="js/app.js?v=16"></script>
 </body>
 </html>

@@ -5,8 +5,12 @@ start_session();
 
 if (isset($_GET['locale'])) {
     set_locale($_GET['locale']);
-    $q = isset($_GET['next']) ? '?next=' . rawurlencode((string) $_GET['next']) : '';
-    header('Location: ' . rtrim(APP_URL, '/') . '/auth.php' . $q);
+    $q = [];
+    if (isset($_GET['next'])) $q['next'] = (string) $_GET['next'];
+    if (isset($_GET['reset'])) $q['reset'] = (string) $_GET['reset'];
+    if (isset($_GET['forgot'])) $q['forgot'] = '1';
+    $qs = $q ? '?' . http_build_query($q) : '';
+    header('Location: ' . rtrim(APP_URL, '/') . '/auth.php' . $qs);
     exit;
 }
 
@@ -19,16 +23,30 @@ if (session_user()) {
 }
 
 $error   = '';
+$notice  = '';
 $tab     = 'login';
 $reg_open = registration_open();
 $locale   = current_locale();
+$reset_token = strtolower(trim((string) ($_POST['reset_token'] ?? $_GET['reset'] ?? '')));
+
+if (isset($_GET['forgot'])) {
+    $tab = 'forgot';
+}
+if ($reset_token !== '') {
+    $tab = 'reset';
+    if (!password_reset_user($reset_token)) {
+        $error = t('auth.reset_invalid');
+        $tab = 'forgot';
+        $reset_token = '';
+    }
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
 
     if (!csrf_verify($_POST['csrf'] ?? '')) {
         $error = t('auth.session_expired');
-        $tab   = ($action === 'register' && $reg_open) ? 'register' : 'login';
+        $tab   = ($action === 'register' && $reg_open) ? 'register' : (($action === 'reset_request' || $action === 'reset_password') ? $tab : 'login');
     } elseif ($action === 'login') {
         $email = trim($_POST['email'] ?? '');
         $pass  = $_POST['password'] ?? '';
@@ -72,7 +90,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
         }
+    } elseif ($action === 'reset_request') {
+        $tab = 'forgot';
+        $email = trim($_POST['email'] ?? '');
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $error = t('auth.invalid_email');
+        } else {
+            password_reset_request($email);
+            $notice = t('auth.reset_sent');
+        }
+    } elseif ($action === 'reset_password') {
+        $tab = 'reset';
+        $pass  = $_POST['password'] ?? '';
+        $pass2 = $_POST['password2'] ?? '';
+        $user  = $reset_token !== '' ? password_reset_user($reset_token) : null;
+        if (!$user) {
+            $error = t('auth.reset_invalid');
+            $tab = 'forgot';
+            $reset_token = '';
+        } elseif (strlen($pass) < 8) {
+            $error = t('auth.password_short');
+        } elseif ($pass !== $pass2) {
+            $error = t('auth.password_mismatch');
+        } elseif (!password_reset_complete((int) $user['id'], $reset_token, $pass)) {
+            $error = t('auth.reset_invalid');
+            $tab = 'forgot';
+            $reset_token = '';
+        } else {
+            header('Location: ' . rtrim(APP_URL, '/') . '/auth.php?updated=1');
+            exit;
+        }
     }
+}
+
+if (isset($_GET['updated'])) {
+    $notice = t('auth.reset_updated');
+    $tab = 'login';
 }
 ?><!DOCTYPE html>
 <html lang="<?= h($locale) ?>">
@@ -107,7 +160,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <p class="text-sm text-slate-400 mt-1.5"><?= h(t('auth.subtitle')) ?></p>
         </div>
 
-        <?php if ($reg_open): ?>
+        <?php if ($reg_open && ($tab === 'login' || $tab === 'register')): ?>
         <div class="auth-tabs">
             <button type="button" onclick="switchTab('login')" id="tab-login" class="auth-tab <?= $tab==='login' ? 'is-on' : '' ?>"><?= h(t('auth.sign_in')) ?></button>
             <button type="button" onclick="switchTab('register')" id="tab-register" class="auth-tab <?= $tab==='register' ? 'is-on' : '' ?>"><?= h(t('auth.create_account')) ?></button>
@@ -117,8 +170,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <?php if ($error): ?>
         <div class="auth-error"><?= h($error) ?></div>
         <?php endif; ?>
+        <?php if ($notice): ?>
+        <div class="auth-error" style="background:#ecfdf5;border-color:#a7f3d0;color:#047857"><?= h($notice) ?></div>
+        <?php endif; ?>
 
-        <form method="POST" id="form-login" class="<?= $tab==='register' ? 'hidden' : '' ?> space-y-4">
+        <form method="POST" id="form-login" class="<?= $tab==='login' ? '' : 'hidden' ?> space-y-4">
             <input type="hidden" name="action" value="login">
             <input type="hidden" name="next" value="<?= h($next) ?>">
             <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
@@ -134,10 +190,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     class="w-full">
             </div>
             <button type="submit" class="btn-primary w-full py-2.5 mt-1"><?= h(t('auth.sign_in')) ?></button>
+            <p class="text-center text-sm pt-1">
+                <a href="?forgot=1&amp;next=<?= h(rawurlencode($next)) ?>" class="text-slate-500 hover:text-slate-800"><?= h(t('auth.forgot_password')) ?></a>
+            </p>
+        </form>
+
+        <form method="POST" id="form-forgot" class="<?= $tab==='forgot' ? '' : 'hidden' ?> space-y-4">
+            <input type="hidden" name="action" value="reset_request">
+            <input type="hidden" name="next" value="<?= h($next) ?>">
+            <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
+            <p class="text-sm text-slate-500"><?= h(t('auth.reset_hint')) ?></p>
+            <div>
+                <label class="block text-sm font-medium mb-1.5"><?= h(t('auth.email')) ?></label>
+                <input type="email" name="email" required autocomplete="email"
+                    class="w-full"
+                    value="<?= h($_POST['email'] ?? '') ?>">
+            </div>
+            <button type="submit" class="btn-primary w-full py-2.5 mt-1"><?= h(t('auth.reset_send')) ?></button>
+            <p class="text-center text-sm pt-1">
+                <a href="auth.php?next=<?= h(rawurlencode($next)) ?>" class="text-slate-500 hover:text-slate-800"><?= h(t('auth.back_to_sign_in')) ?></a>
+            </p>
+        </form>
+
+        <form method="POST" id="form-reset" class="<?= $tab==='reset' ? '' : 'hidden' ?> space-y-4">
+            <input type="hidden" name="action" value="reset_password">
+            <input type="hidden" name="next" value="<?= h($next) ?>">
+            <input type="hidden" name="reset_token" value="<?= h($reset_token) ?>">
+            <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
+            <div>
+                <label class="block text-sm font-medium mb-1.5"><?= h(t('auth.new_password')) ?> <span class="text-slate-400 font-normal"><?= h(t('auth.password_min')) ?></span></label>
+                <input type="password" name="password" required autocomplete="new-password" class="w-full">
+            </div>
+            <div>
+                <label class="block text-sm font-medium mb-1.5"><?= h(t('auth.confirm_password')) ?></label>
+                <input type="password" name="password2" required autocomplete="new-password" class="w-full">
+            </div>
+            <button type="submit" class="btn-primary w-full py-2.5 mt-1"><?= h(t('auth.reset_password')) ?></button>
         </form>
 
         <?php if ($reg_open): ?>
-        <form method="POST" id="form-register" class="<?= $tab==='login' ? 'hidden' : '' ?> space-y-4">
+        <form method="POST" id="form-register" class="<?= $tab==='register' ? '' : 'hidden' ?> space-y-4">
             <input type="hidden" name="action" value="register">
             <input type="hidden" name="next" value="<?= h($next) ?>">
             <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
@@ -162,9 +254,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <?php endif; ?>
 
         <div class="lang-switch">
-            <a href="?locale=en&amp;next=<?= h(rawurlencode($next)) ?>" class="<?= $locale==='en' ? 'is-on' : '' ?>">EN</a>
+            <a href="?locale=en&amp;next=<?= h(rawurlencode($next)) ?><?= $tab==='forgot' ? '&amp;forgot=1' : '' ?><?= $reset_token !== '' ? '&amp;reset=' . h(rawurlencode($reset_token)) : '' ?>" class="<?= $locale==='en' ? 'is-on' : '' ?>">EN</a>
             <span aria-hidden="true">·</span>
-            <a href="?locale=de&amp;next=<?= h(rawurlencode($next)) ?>" class="<?= $locale==='de' ? 'is-on' : '' ?>">DE</a>
+            <a href="?locale=de&amp;next=<?= h(rawurlencode($next)) ?><?= $tab==='forgot' ? '&amp;forgot=1' : '' ?><?= $reset_token !== '' ? '&amp;reset=' . h(rawurlencode($reset_token)) : '' ?>" class="<?= $locale==='de' ? 'is-on' : '' ?>">DE</a>
         </div>
     </div>
     <script>

@@ -10,9 +10,7 @@ if (!TELEGRAM_BOT_TOKEN) {
     exit('Telegram is not configured');
 }
 
-$secret = TELEGRAM_WEBHOOK_SECRET !== ''
-    ? TELEGRAM_WEBHOOK_SECRET
-    : substr(hash('sha256', 'wh:' . TELEGRAM_BOT_TOKEN), 0, 32);
+$secret = telegram_webhook_secret();
 $header = (string) ($_SERVER['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN'] ?? '');
 $query  = (string) ($_GET['key'] ?? '');
 if ($secret !== '' && !hash_equals($secret, $header) && !hash_equals($secret, $query)) {

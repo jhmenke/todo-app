@@ -30,7 +30,9 @@ $sentToday = (int) db()->query("
 
 $remaining = CRON_DAILY_LIMIT - $sentToday;
 
-telegram_poll_updates();
+if (meta_get('telegram_webhook', '0') !== '1') {
+    telegram_poll_updates();
+}
 
 if ($remaining <= 0) {
     $log("Daily limit of " . CRON_DAILY_LIMIT . " notifications reached ({$sentToday} sent today). Skipping run.");

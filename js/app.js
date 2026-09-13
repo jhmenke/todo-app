@@ -180,6 +180,8 @@ function todoApp() {
         telegramLinkPending: false,
         telegramLinkUrl:     '',
         telegramError:       '',
+        telegramWebhook:     false,
+        telegramWebhookError:'',
         telegramLinkTimer:   null,
         pwCurrent:   '',
         pwNew:       '',
@@ -208,13 +210,13 @@ function todoApp() {
             if (s.notify_minutes)     this.settingsMinutes     = s.notify_minutes;
             if (s.notify_channel)     this.settingsChannel     = s.notify_channel;
             if (s.locale)             this.settingsLocale      = s.locale;
-            this.telegramLinked     = !!s.telegram_linked;
-            this.telegramConfigured = !!s.telegram_configured;
+            this.applyTelegramStatus(s);
             this.$watch('showSettings', open => {
                 if (open) {
                     this.refreshTelegramStatus().then(() => {
                         if (!this.telegramLinked && this.telegramConfigured) this.prepareTelegramLink();
                     });
+                    this.refreshTelegramWebhook();
                 } else this.stopTelegramPoll();
             });
             this.allUsers = Array.isArray(users) ? users : [];
@@ -670,6 +672,8 @@ function todoApp() {
             if (!s || s.error) return;
             this.telegramLinked     = !!s.telegram_linked;
             this.telegramConfigured = !!s.telegram_configured;
+            this.telegramWebhook    = !!s.telegram_webhook;
+            this.telegramWebhookError = s.telegram_webhook_error || '';
         },
         async refreshTelegramStatus() {
             const s = await this.api('GET', 'settings');
@@ -707,6 +711,22 @@ function todoApp() {
                 clearInterval(this.telegramLinkTimer);
                 this.telegramLinkTimer = null;
             }
+        },
+        async refreshTelegramWebhook() {
+            if (!this.telegramConfigured) return;
+            const r = await this.api('GET', 'telegram_webhook');
+            if (r.error) return;
+            this.telegramWebhook = !!r.telegram_webhook;
+            this.telegramWebhookError = r.telegram_webhook_error || '';
+        },
+        async setTelegramWebhook(enable) {
+            this.telegramError = '';
+            this.telegramWebhookError = '';
+            const r = await this.api('POST', 'telegram_webhook', { enable: !!enable });
+            if (r.error) { this.telegramError = r.error; return; }
+            this.telegramWebhook = !!r.telegram_webhook;
+            this.telegramWebhookError = r.telegram_webhook_error || '';
+            this.toast(this.telegramWebhook ? this.t('settings.telegram_instant_on') : this.t('settings.telegram_instant_off'));
         },
         async unlinkTelegram() {
             this.telegramError = '';

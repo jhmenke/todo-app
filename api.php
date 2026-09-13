@@ -26,7 +26,7 @@ $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
 if (!$user) { json_out(['error' => t('error.unauthenticated')], 401); }
 
-$read_actions = ['todos','todo','tags','comments','shares','get_users','find_user','settings','get_files'];
+$read_actions = ['todos','todo','tags','comments','shares','get_users','find_user','settings','get_files','telegram_webhook'];
 if (!in_array($action, $read_actions, true) && $method !== 'POST') {
     json_out(['error' => t('error.method')], 405);
 }
@@ -62,6 +62,7 @@ match ($action) {
     'update_settings' => update_settings($uid, $body),
     'telegram_link'   => telegram_link($uid),
     'telegram_unlink' => telegram_unlink($uid),
+    'telegram_webhook'=> telegram_webhook($uid, $body),
     'change_password' => change_password($uid, $body),
     'logout'          => logout(),
     'get_files'       => get_files($uid),
@@ -355,6 +356,8 @@ function get_settings(int $uid): never {
     if (!$row) json_out(['error' => t('error.not_found')], 404);
     $row['telegram_linked'] = !empty($row['telegram_chat_id']);
     $row['telegram_configured'] = telegram_configured();
+    $row['telegram_webhook'] = meta_get('telegram_webhook', '0') === '1';
+    $row['telegram_webhook_error'] = '';
     unset($row['telegram_chat_id']);
     json_out($row);
 }
@@ -380,6 +383,19 @@ function telegram_link(int $uid): never {
 function telegram_unlink(int $uid): never {
     telegram_unlink_user($uid);
     json_out(['ok' => true, 'telegram_linked' => false]);
+}
+
+function telegram_webhook(int $uid, array $b): never {
+    if (!telegram_configured()) json_out(['error' => t('error.telegram_off')], 503);
+    $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+    if ($method !== 'POST') {
+        $st = telegram_webhook_status();
+        json_out(['ok' => true, 'telegram_webhook' => $st['on'], 'telegram_webhook_error' => $st['error']]);
+    }
+    $res = telegram_set_webhook(!empty($b['enable']));
+    if (empty($res['ok'])) json_out(['error' => $res['error'] ?? t('error.telegram_bot')], 502);
+    $st = telegram_webhook_status();
+    json_out(['ok' => true, 'telegram_webhook' => $st['on'], 'telegram_webhook_error' => $st['error']]);
 }
 
 function change_password(int $uid, array $b): never {

@@ -106,8 +106,9 @@ location /todo-app/ {
 ### 6. First run
 
 1. Visit `https://yourdomain.com/todo-app/` and register your first account. The database schema is created automatically (or upgraded — see below).
-2. Open **Settings**: language, notification channel, lead time. If you use Telegram, tap **Link Telegram** and Start the bot.
-3. Set `ALLOW_REGISTRATION` to `false` in `config.php` so strangers cannot create accounts. (The very first user can still register even when this is false, in case the database is empty.)
+2. Open **Settings**: language, notification channel, lead time. If you use Telegram, tap **Link Telegram** and Start the bot. For instant bot replies without SSH, tap **Enable instant replies** (needs HTTPS). Keep the Plesk minute cron for due notifications.
+3. Lost password: login page → **Forgot password?** A 30-minute link is emailed and, if Telegram is linked, sent in chat.
+4. Set `ALLOW_REGISTRATION` to `false` in `config.php` so strangers cannot create accounts. (The very first user can still register even when this is false, in case the database is empty.)
 
 ## Reusing an existing SQLite database
 
@@ -123,7 +124,7 @@ On first request the app adds missing columns and leaves existing data in place:
 | `todos.priority` | `4` (none) |
 | `todos.parent_id` | empty (no sub-tasks) |
 
-A `telegram_link_tokens` table is created if missing (used by **Link Telegram** in Settings). Existing `telegram_chat_id` values stay valid; users do not need to re-link.
+A `telegram_link_tokens` table is created if missing (used by **Link Telegram** in Settings). Existing `telegram_chat_id` values stay valid; users do not need to re-link. `password_reset_tokens` is created for **Forgot password?** links.
 
 Passwords, todos, tags, shares, comments, and files stay as they are. Existing users can switch to Deutsch in Settings. Log in once after deploy (cookie path follows `APP_URL`).
 
@@ -164,16 +165,11 @@ After linking in Settings, message the bot a title. Dates can be at the start or
 
 Send `today?` / `heute?` or `tomorrow?` / `morgen?` for an overview of incomplete tasks due that day (`today?` also lists overdue). `/start` or `/help` shows examples. `/unlink` disconnects the chat.
 
-Incoming messages are picked up by the minute cron (`getUpdates`). For instant create, set a webhook (HTTPS required):
+Incoming messages are picked up by the minute cron (`getUpdates`) unless a **webhook** is on. For instant replies without SSH (e.g. Plesk only): open **Settings** while logged in and tap **Enable instant replies**. That calls Telegram `setWebhook` from PHP. `APP_URL` is upgraded to `https://` for the webhook (Telegram does not accept HTTP). `telegram.php` must be web-accessible (unlike `cron.php`).
 
-```bash
-SECRET=$(php -r "require 'config.php'; echo TELEGRAM_WEBHOOK_SECRET !== '' ? TELEGRAM_WEBHOOK_SECRET : substr(hash('sha256', 'wh:'.TELEGRAM_BOT_TOKEN), 0, 32);")
-curl -s "https://api.telegram.org/bot$BOT_TOKEN/setWebhook" \
-  -d "url=https://yourdomain.com/todo-app/telegram.php?key=$SECRET" \
-  -d "secret_token=$SECRET"
-```
+Keep the Plesk scheduled task (`* * * * * php …/cron.php`) for due notifications. After the webhook is on, cron skips `getUpdates`.
 
-`telegram.php` must be web-accessible (unlike `cron.php`).
+To go back to polling, tap **Use minute polling** in Settings.
 
 ## Optional config
 

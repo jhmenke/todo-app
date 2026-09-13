@@ -99,6 +99,11 @@ function db_init(PDO $db): void {
             user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             expires_at DATETIME NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS password_reset_tokens (
+            token_hash TEXT PRIMARY KEY,
+            user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            expires_at DATETIME NOT NULL
+        );
     ");
     // Migrations: add columns if they don't exist yet
     foreach ([
@@ -237,6 +242,47 @@ function telegram_send_document(string $chat_id, string $filename, string $bytes
 
 function telegram_configured(): bool {
     return TELEGRAM_BOT_TOKEN !== '';
+}
+
+function telegram_webhook_secret(): string {
+    return TELEGRAM_WEBHOOK_SECRET !== ''
+        ? TELEGRAM_WEBHOOK_SECRET
+        : substr(hash('sha256', 'wh:' . TELEGRAM_BOT_TOKEN), 0, 32);
+}
+
+function telegram_webhook_url(): string {
+    $base = rtrim(APP_URL, '/');
+    if (str_starts_with($base, 'http://')) {
+        $base = 'https://' . substr($base, strlen('http://'));
+    }
+    return $base . '/telegram.php?key=' . rawurlencode(telegram_webhook_secret());
+}
+
+function telegram_webhook_status(): array {
+    $info = telegram_api('getWebhookInfo');
+    $url = (is_array($info) && !empty($info['ok'])) ? (string) ($info['result']['url'] ?? '') : '';
+    $err = (is_array($info) && !empty($info['ok'])) ? (string) ($info['result']['last_error_message'] ?? '') : '';
+    $on = $url !== '';
+    meta_set('telegram_webhook', $on ? '1' : '0');
+    return ['on' => $on, 'error' => $err];
+}
+
+function telegram_set_webhook(bool $enable): array {
+    if ($enable) {
+        $res = telegram_api('setWebhook', [
+            'url' => telegram_webhook_url(),
+            'secret_token' => telegram_webhook_secret(),
+            'allowed_updates' => ['message'],
+        ]);
+    } else {
+        $res = telegram_api('deleteWebhook', ['drop_pending_updates' => false]);
+    }
+    if (!$res || empty($res['ok'])) {
+        $desc = is_array($res) ? (string) ($res['description'] ?? '') : '';
+        return ['ok' => false, 'error' => $desc !== '' ? $desc : t('error.telegram_bot')];
+    }
+    meta_set('telegram_webhook', $enable ? '1' : '0');
+    return ['ok' => true, 'on' => $enable];
 }
 
 function telegram_bot_username(): ?string {
@@ -539,6 +585,68 @@ function user_from_remember_cookie(): ?array {
 function clear_remember(int $uid): void {
     db()->prepare('DELETE FROM remember_tokens WHERE user_id=?')->execute([$uid]);
     setcookie('remember', '', auth_cookie_opts(time() - 3600));
+}
+
+function password_reset_url(string $token): string {
+    return rtrim(APP_URL, '/') . '/auth.php?reset=' . rawurlencode($token);
+}
+
+function password_reset_user(string $token): ?array {
+    $token = strtolower(trim($token));
+    if (!preg_match('/^[a-f0-9]{32}$/', $token)) return null;
+    $stmt = db()->prepare(
+        'SELECT u.* FROM password_reset_tokens t JOIN users u ON u.id = t.user_id
+         WHERE t.token_hash=? AND t.expires_at > datetime("now","localtime")'
+    );
+    $stmt->execute([hash('sha256', $token)]);
+    return $stmt->fetch() ?: null;
+}
+
+function password_reset_request(string $email): void {
+    $email = trim($email);
+    $stmt = db()->prepare('SELECT * FROM users WHERE email=?');
+    $stmt->execute([$email]);
+    $user = $stmt->fetch();
+    if (!$user) return;
+
+    $uid = (int) $user['id'];
+    $open = db()->prepare('SELECT expires_at FROM password_reset_tokens WHERE user_id=? AND expires_at > datetime("now","localtime")');
+    $open->execute([$uid]);
+    $exp = $open->fetchColumn();
+    if ($exp && (strtotime((string) $exp) - time()) > 28 * 60) {
+        return;
+    }
+
+    db()->prepare('DELETE FROM password_reset_tokens WHERE user_id=? OR expires_at <= datetime("now","localtime")')->execute([$uid]);
+    $token = bin2hex(random_bytes(16));
+    db()->prepare('INSERT INTO password_reset_tokens (token_hash, user_id, expires_at) VALUES (?,?,datetime("now","localtime","+30 minutes"))')
+        ->execute([hash('sha256', $token), $uid]);
+
+    $loc = normalize_locale($user['locale'] ?? 'en');
+    $link = password_reset_url($token);
+    $subject = '[' . APP_NAME . '] ' . t('auth.reset_email_subject', [], $loc);
+    $html = '<!DOCTYPE html><html lang="' . h($loc) . '"><body style="font-family:sans-serif;max-width:480px;margin:40px auto;color:#1e293b">'
+        . '<p>' . htmlspecialchars(t('auth.reset_email_body', [], $loc), ENT_QUOTES, 'UTF-8') . '</p>'
+        . '<p><a href="' . htmlspecialchars($link, ENT_QUOTES, 'UTF-8') . '" style="color:#4f46e5">' . htmlspecialchars($link, ENT_QUOTES, 'UTF-8') . '</a></p>'
+        . '<p style="color:#94a3b8;font-size:12px">' . htmlspecialchars(APP_NAME, ENT_QUOTES, 'UTF-8') . '</p>'
+        . '</body></html>';
+    send_email($user['email'], $subject, $html);
+    if (!empty($user['telegram_chat_id'])) {
+        send_telegram(
+            (string) $user['telegram_chat_id'],
+            t('auth.reset_telegram', [], $loc) . "\n<a href=\"" . htmlspecialchars($link, ENT_QUOTES, 'UTF-8') . '">'
+            . htmlspecialchars(t('auth.reset_open', [], $loc), ENT_QUOTES, 'UTF-8') . '</a>'
+        );
+    }
+}
+
+function password_reset_complete(int $uid, string $token, string $new): bool {
+    $row = password_reset_user($token);
+    if (!$row || (int) $row['id'] !== $uid) return false;
+    db()->prepare('UPDATE users SET password_hash=? WHERE id=?')->execute([password_hash($new, PASSWORD_DEFAULT), $uid]);
+    db()->prepare('DELETE FROM password_reset_tokens WHERE user_id=?')->execute([$uid]);
+    clear_remember($uid);
+    return true;
 }
 
 function logout_user(): void {

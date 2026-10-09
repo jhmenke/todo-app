@@ -151,6 +151,7 @@ function todoApp() {
         uploading:    false,
         uploadError:  '',
         drawerLoading: false,
+        completingDrawer: false,
 
         // ── Edit-in-drawer ────────────────────────────────────
         editing: false,
@@ -273,7 +274,9 @@ function todoApp() {
                 this.todos = data;
                 if (silent && this.drawer) await this.refreshOpenDrawer();
             } finally {
-                if (!silent && req === this.todosReq) this.loading = false;
+                // A background refresh can supersede a foreground load that hid the list.
+                // The latest request must release loading regardless of how it started.
+                if (req === this.todosReq) this.loading = false;
             }
         },
 
@@ -338,7 +341,7 @@ function todoApp() {
         // ── Create / Edit Modal ───────────────────────────────
         openCreate() {
             this.form = {
-                title: '', active_date: '', active_time: '', tag_ids: [],
+                title: '', active_date: '', active_time: '', tag_ids: this.filterTagId ? [this.filterTagId] : [],
                 recur_type: '', recur_interval: 1, recur_days: [], recur_ends_at: '',
                 share_emails: [], priority: 4, parent_id: null,
             };
@@ -382,6 +385,7 @@ function todoApp() {
         },
 
         async saveForm() {
+            if (this.savingForm) return;
             if (!this.form.title.trim()) { this.formError = this.t('form.title_required'); return; }
             this.savingForm = true;
             this.formError  = '';
@@ -459,6 +463,54 @@ function todoApp() {
             await this.loadDrawerData(todo.id);
         },
         closeDrawer() { this.drawer = null; },
+
+        beginInlineEdit(todo = this.drawer) {
+            if (!todo || !todo.is_owner) return;
+            const at = todo.active_at ? todo.active_at.replace(' ', 'T') : null;
+            this.form = {
+                id: todo.id,
+                title: todo.title,
+                active_date: at ? at.slice(0, 10) : '',
+                active_time: at ? at.slice(11, 16) : '',
+                tag_ids: (todo.tags || []).map(tag => tag.id),
+                recur_type: todo.recur_type || '',
+                recur_interval: todo.recur_interval || 1,
+                recur_days: todo.recur_days ? JSON.parse(todo.recur_days) : [],
+                recur_ends_at: todo.recur_ends_at ? todo.recur_ends_at.slice(0, 16) : '',
+                share_emails: [],
+                priority: todo.priority || 4,
+                parent_id: todo.parent_id || null,
+            };
+            this.formError = '';
+            this.editing = true;
+        },
+
+        cancelInlineEdit() {
+            this.editing = false;
+            this.formError = '';
+        },
+
+        async saveInlineEdit() {
+            if (!this.form.title.trim()) { this.formError = this.t('form.title_required'); return; }
+            this.savingForm = true;
+            this.formError = '';
+            try {
+                const payload = { ...this.form };
+                payload.active_at = this.resolveActiveAt(payload.active_date, payload.active_time);
+                delete payload.active_date;
+                delete payload.active_time;
+                delete payload.share_emails;
+                if (!payload.recur_type) { payload.recur_type = null; payload.recur_days = []; payload.recur_ends_at = ''; }
+                const result = await this.api('POST', 'update_todo', payload);
+                if (result.error) { this.formError = result.error; return; }
+                this.drawer = result;
+                this.editing = false;
+                await this.loadTodos();
+                this.toast(this.t('toast.saved'));
+            } finally {
+                this.savingForm = false;
+            }
+        },
 
         async loadDrawerData(id) {
             this.drawerLoading = true;
@@ -623,6 +675,16 @@ function todoApp() {
             if (this.drawer) {
                 const full = await this.api('GET', 'todo', null, { id: this.drawer.id });
                 if (!full.error) this.drawer = full;
+            }
+        },
+
+        async toggleDrawerComplete(e) {
+            if (!this.drawer || !this.drawer.is_owner || this.completingDrawer) return;
+            this.completingDrawer = true;
+            try {
+                await this.toggleComplete(this.drawer, e);
+            } finally {
+                this.completingDrawer = false;
             }
         },
 
@@ -864,6 +926,15 @@ function todoApp() {
                 this.shareDropdown = [];
             }
             this.shareDropdownIndex = this.shareDropdown.length ? 0 : -1;
+        },
+
+        onTitleKeydown(e) {
+            if (e.isComposing) return;
+            this.shareDropdownNav(e);
+            if (e.key === 'Enter' && !e.defaultPrevented) {
+                e.preventDefault();
+                if (!e.repeat) return this.saveForm();
+            }
         },
 
         shareDropdownNav(e) {

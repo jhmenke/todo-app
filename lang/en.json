@@ -75,6 +75,8 @@
   "task": {
     "activates": "Activates:",
     "completed": "Completed:",
+    "mark_complete": "Mark as complete",
+    "mark_incomplete": "Mark as incomplete",
     "subtask_of": "Sub-task of",
     "subtasks": "Sub-tasks",
     "none_yet": "None yet",
@@ -221,7 +223,7 @@
   "tg": {
     "unknown": "This chat is not linked. Open Settings in the app and tap Link Telegram.",
     "linked": "Linked to {email}. Send a task as a message.",
-    "help": "Dates at the start or end, or in quotes:\nBuy milk tomorrow 9am\nMilch kaufen 16 Uhr +Lisa\n#Tag  p1  +Peter\n\nOverview:\ntoday?  or  heute?\ntomorrow?  or  morgen?",
+    "help": "Dates at the start or end, or in quotes:\nBuy milk tomorrow 9am\nMilch kaufen 16 Uhr +Lisa\n#Tag  p1  +Peter\n\nOverview:\n?  (today and tomorrow)\ntoday?  /  heute?\ntomorrow?  /  morgen?",
     "shared": "Shared with {names}",
     "created": "Created: {title}",
     "due": "Due {when}",

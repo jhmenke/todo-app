@@ -75,6 +75,8 @@
   "task": {
     "activates": "Aktiv ab:",
     "completed": "Erledigt:",
+    "mark_complete": "Als erledigt markieren",
+    "mark_incomplete": "Als unerledigt markieren",
     "subtask_of": "Unteraufgabe von",
     "subtasks": "Unteraufgaben",
     "none_yet": "Noch keine",
@@ -221,7 +223,7 @@
   "tg": {
     "unknown": "Dieser Chat ist nicht verknüpft. In der App unter Einstellungen auf Telegram verknüpfen tippen.",
     "linked": "Verknüpft mit {email}. Sende eine Aufgabe als Nachricht.",
-    "help": "Datum am Anfang oder Ende, oder in Anführungszeichen:\nMilch kaufen morgen 9 Uhr\nMilch kaufen 16 Uhr +Lisa\n#Tag  p1  +Peter\n\nÜbersicht:\nheute?  oder  today?\nmorgen?  oder  tomorrow?",
+    "help": "Datum am Anfang oder Ende, oder in Anführungszeichen:\nMilch kaufen morgen 9 Uhr\nMilch kaufen 16 Uhr +Lisa\n#Tag  p1  +Peter\n\nÜbersicht:\n?  (heute und morgen)\nheute?  /  today?\nmorgen?  /  tomorrow?",
     "shared": "Geteilt mit {names}",
     "created": "Erstellt: {title}",
     "due": "Fällig {when}",

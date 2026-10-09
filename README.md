@@ -5,6 +5,8 @@ A self-hosted task manager written in PHP 8.1+, SQLite, Alpine.js, and Tailwind 
 ## Features
 
 - Create, edit, complete, and delete tasks, including subtasks and priorities
+- New tasks inherit the selected sidebar tag. Press Enter in the title field to save; when autocomplete is open, Enter selects the suggestion first.
+- Click a task's title in its detail view to edit its title, date/time, and tags directly. Use the circular checkbox beside the title to complete or reopen your task, including tasks opened from notification links.
 - Color-coded tags for grouping work
 - Recurring tasks: daily, weekly, monthly, or a custom interval. Completing a recurring task schedules the next future occurrence.
 - Share a task with other registered users. Each person can set a short name in Settings (Peter, Lisa); mention them as `+Peter` in Telegram or in the title field. `<+email>` still works.
@@ -12,7 +14,7 @@ A self-hosted task manager written in PHP 8.1+, SQLite, Alpine.js, and Tailwind 
 - Email and Telegram notifications before a task’s activation time (SMTP, PHP `mail()`, or a Telegram bot). Due messages include a link to open and complete the task.
 - One Telegram bot from `config.php`. Users tap **Link Telegram** in Settings (no chat ID to copy). **Enable instant replies** in Settings turns on a Telegram webhook (HTTPS; no SSH). Keep the minute cron for due notifications.
 - Create tasks by messaging the bot. Dates can sit at the start or end (`16 Uhr bügeln`, `tomorrow 9am`) or in quotes (`"morgen 9 Uhr"`); `#tag`, `p1`, `+Peter`, and `<+email>` still work. Timed creates attach a `.ics` calendar file on the confirmation.
-- Ask the bot `today?` / `heute?` or `tomorrow?` / `morgen?` for a due-list (overdue is included in today).
+- Ask the bot `?` for today and tomorrow, or `today?` / `heute?` / `tomorrow?` / `morgen?` for one day (overdue is included in today).
 - English and German UI. Dates use `YYYY.MM.DD`. German uses 24-hour time; English uses 12-hour AM/PM.
 - User accounts: registration (can be disabled after the first user), login with a 90-day remember-me cookie, password change in Settings, and **Forgot password?** on the login page (email plus Telegram if the account is linked)
 - Opt-in datetime tags in titles, for example `"friday 18:00"`, `<morgen 9 Uhr>`, or (Telegram) a date at the start or end of the message
@@ -35,6 +37,26 @@ See [DEPLOY.md](DEPLOY.md) for deployment details. In short:
 4. Schedule cron: `* * * * * php /path/to/todo-app/cron.php`
 5. Open the URL, register the first account, then set `ALLOW_REGISTRATION` to `false`.
 
+Task dialogs close with Escape or a click on the surrounding backdrop. The Save button is at the bottom of the create/edit dialog. Successful completion closes the task detail view and offers Undo.
+
+See [CHANGELOG.md](CHANGELOG.md) for recent changes.
+
+## Development checks
+
+The JavaScript regression tests require Node.js 18+ and use its built-in test runner, with no npm dependencies. Run them from the repository root:
+
+```bash
+node tests/app-loading.test.cjs
+node tests/app-title-submit.test.cjs
+node tests/app-drawer-completion.test.cjs
+node --check js/app.js
+php -l index.php
+php -l app.php
+git diff --check
+```
+
+These tests cover overlapping list loads, title-field submission and autocomplete, and completion from the task detail view. API responses are mocked; they do not exercise a deployed server or a mobile browser.
+
 ## Project structure
 
 ```
@@ -48,6 +70,7 @@ todo-app/
 ├── download.php     # Authenticated file downloads
 ├── config.php       # App configuration
 ├── lang/            # English and German strings
+├── tests/           # JavaScript regression tests
 ├── db/              # SQLite database (created on first request; not web-accessible)
 ├── uploads/         # Attachments (created per user and task)
 ├── css/app.css      # Styles

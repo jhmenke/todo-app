@@ -14,7 +14,9 @@ Copy the `todo-app/` directory into your webroot, e.g. `/var/www/html/todo-app/`
 
 Include **`lang/`** (`en.json`, `de.json`). Without it the UI shows translation keys instead of labels.
 
-Do **not** deploy `debugging/` or any `*_jhmenke.php` / personal config overlays.
+Do **not** deploy `debugging/`, `tests/`, or any `*_jhmenke.php` / personal config overlays.
+
+When updating, upload `index.php`, `js/app.js`, and both language files together. The page derives the JavaScript URL's version from the script contents so browsers fetch changed code automatically. Reload an already open page after deployment to load the updated script. Preserve the server's configuration, database, and uploaded attachments.
 
 ### 2. Configure the app
 
@@ -160,11 +162,13 @@ Uploads are enabled. Limits:
 
 The cron job notifies the todo owner and anyone the todo is shared with, once per (todo, user), when `active_at` falls inside that user's `notify_minutes` window. Messages are in the recipient's language and include a link to that task (`/?todo=ID`). If you are not logged in, login continues to that same URL.
 
+Owners can complete the task using the circular checkbox beside its title in the detail view opened by the notification link. Completion closes the detail view and offers Undo. Shared recipients can view the task, but completion remains an owner action.
+
 ### Create tasks from Telegram
 
 After linking in Settings, message the bot a title. Dates can be at the start or end (`16 Uhr bügeln`, `tomorrow 9am`, `morgen 9 Uhr`) or quoted (`"friday 18:00"`). `#Tag`, `p1`, and `<+email>` still work. If the new task has a time, the confirmation includes a `.ics` file (30-minute event) to add to a calendar; there is no “open & complete” link on that ack.
 
-Send `today?` / `heute?` or `tomorrow?` / `morgen?` for an overview of incomplete tasks due that day (`today?` also lists overdue). `/start` or `/help` shows examples. `/unlink` disconnects the chat.
+Send `?` for today's and tomorrow's overviews together, or `today?` / `heute?` or `tomorrow?` / `morgen?` for one day. Today's overview includes overdue incomplete tasks. The day words also work without a question mark; full-width question marks and extra whitespace are accepted. `/start` or `/help` shows examples. `/unlink` disconnects the chat.
 
 Incoming messages are picked up by the minute cron (`getUpdates`) unless a **webhook** is on. For instant replies without SSH (e.g. Plesk only): open **Settings** while logged in and tap **Enable instant replies**. That calls Telegram `setWebhook` from PHP. `APP_URL` is upgraded to `https://` for the webhook (Telegram does not accept HTTP). `telegram.php` must be web-accessible (unlike `cron.php`).
 

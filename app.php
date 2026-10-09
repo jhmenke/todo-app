@@ -1113,6 +1113,13 @@ function create_todo_from_text(int $uid, string $text): ?array {
 
 function telegram_day_overview(int $uid, string $which, string $locale): string {
     $locale = normalize_locale($locale);
+    if ($which === 'both') {
+        $parts = [
+            telegram_day_overview($uid, 'today', $locale),
+            telegram_day_overview($uid, 'tomorrow', $locale),
+        ];
+        return implode("\n\n", $parts);
+    }
     $today = (new DateTime('today'))->format('Y-m-d');
     $tomorrow = (new DateTime('today'))->modify('+1 day')->format('Y-m-d');
     $day = $which === 'tomorrow' ? $tomorrow : $today;
@@ -1182,6 +1189,8 @@ function handle_telegram_update(array $update): void {
     $chat_id = (string) ($msg['chat']['id'] ?? '');
     if ($chat_id === '') return;
     $text = trim((string) $msg['text']);
+    $text = preg_replace('/[\x{200B}-\x{200D}\x{FEFF}\x{00A0}]/u', ' ', $text) ?? $text;
+    $text = trim(preg_replace('/\s+/u', ' ', $text) ?? $text);
     $user = telegram_user_by_chat($chat_id);
     $lang = $user['locale'] ?? ($msg['from']['language_code'] ?? 'en');
 
@@ -1219,9 +1228,15 @@ function handle_telegram_update(array $update): void {
         send_telegram($chat_id, t('tg.unknown', [], $lang));
         return;
     }
-    if (preg_match('/^(today|tomorrow|heute|morgen)\s*\?$/iu', $text, $q)) {
-        $which = in_array(mb_strtolower($q[1], 'UTF-8'), ['tomorrow', 'morgen'], true) ? 'tomorrow' : 'today';
-        send_telegram($chat_id, telegram_day_overview((int) $user['id'], $which, $user['locale'] ?? $lang));
+    $overview = '';
+    if (preg_match('/^(?:\?+|？+)$/u', $text)) {
+        $overview = 'both';
+    } elseif (preg_match('/^(today|tomorrow|heute|morgen)\s*[?？]*$/iu', $text, $q)) {
+        $word = mb_strtolower($q[1], 'UTF-8');
+        $overview = in_array($word, ['tomorrow', 'morgen'], true) ? 'tomorrow' : 'today';
+    }
+    if ($overview !== '') {
+        send_telegram($chat_id, telegram_day_overview((int) $user['id'], $overview, $user['locale'] ?? $lang));
         return;
     }
     $todo = create_todo_from_text((int) $user['id'], $text);

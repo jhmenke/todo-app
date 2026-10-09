@@ -280,34 +280,63 @@ $user = require_auth();
         <div class="flex flex-col h-full">
             <!-- Drawer header -->
             <div class="flex items-start gap-3 px-5 py-5 border-b" style="border-color:var(--line)">
+                <input type="checkbox" class="todo-check mt-0.5" x-show="!editing"
+                    :checked="!!drawer.completed_at"
+                    :disabled="!drawer.is_owner || completingDrawer"
+                    :title="drawer.is_owner ? (drawer.completed_at ? t('task.mark_incomplete') : t('task.mark_complete')) : t('error.not_owner')"
+                    :aria-label="drawer.completed_at ? t('task.mark_incomplete') : t('task.mark_complete')"
+                    @click.stop.prevent="toggleDrawerComplete($event)">
                 <div class="flex-1 min-w-0">
-                    <div class="flex items-center gap-2 flex-wrap">
-                        <h2 class="font-semibold text-base leading-snug tracking-tight" x-text="drawer.title"></h2>
+                    <div class="flex items-center gap-2 flex-wrap" x-show="!editing">
+                        <button type="button" class="font-semibold text-base leading-snug tracking-tight text-left hover:text-accent transition-colors"
+                            :class="drawer.is_owner ? 'cursor-text' : 'cursor-default'"
+                            :title="drawer.is_owner ? t('list.edit') : ''"
+                            @click="beginInlineEdit()" x-text="drawer.title"></button>
                         <span class="prio-flag" x-show="drawer.priority < 4" :class="'p'+drawer.priority"></span>
                         <span x-show="drawer.recur_type" class="recur-badge" x-text="recurLabel(drawer)"></span>
                         <span x-show="!drawer.is_owner" class="share-pill">
                             <span x-text="t('task.shared_by')"></span> <span x-text="drawer.owner_email"></span>
                         </span>
                     </div>
-                    <div class="flex flex-wrap gap-1 mt-2" x-show="drawer.tags.length">
+                    <div x-show="editing" class="space-y-2">
+                        <p x-show="formError" class="text-xs text-red-600" x-text="formError"></p>
+                        <input type="text" x-model="form.title" class="w-full text-sm font-semibold" :placeholder="t('form.title_placeholder')"
+                            @keydown.enter.prevent="saveInlineEdit()">
+                        <div class="flex gap-2">
+                            <input type="date" x-model="form.active_date" class="min-w-0 flex-1 text-sm">
+                            <input type="time" x-model="form.active_time" class="min-w-0 flex-1 text-sm">
+                        </div>
+                        <div class="flex flex-wrap gap-1.5">
+                            <template x-for="tag in tags" :key="'inline-tag-'+tag.id">
+                                <button type="button" @click="toggleFormTag(tag.id)"
+                                    class="tag-pill cursor-pointer ring-2 ring-offset-1 transition-all"
+                                    :style="`background:${tag.color}`"
+                                    :class="form.tag_ids.includes(tag.id) ? 'ring-accent' : 'ring-transparent opacity-60'"
+                                    x-text="tag.name"></button>
+                            </template>
+                        </div>
+                        <div class="flex justify-end gap-2">
+                            <button type="button" class="btn-ghost" @click="cancelInlineEdit()" x-text="t('form.cancel')"></button>
+                            <button type="button" class="btn-primary" :disabled="savingForm" @click="saveInlineEdit()"
+                                x-text="savingForm ? t('form.saving') : t('form.save')"></button>
+                        </div>
+                    </div>
+                    <div class="flex flex-wrap gap-1 mt-2" x-show="!editing && drawer.tags.length">
                         <template x-for="tag in drawer.tags" :key="tag.id">
                             <span class="tag-pill" :style="`background:${tag.color}`" x-text="tag.name"></span>
                         </template>
                     </div>
-                    <p class="text-xs text-slate-400 mt-2" x-show="drawer.active_at && !drawer.completed_at">
+                    <p class="text-xs text-slate-400 mt-2" x-show="!editing && drawer.active_at && !drawer.completed_at">
                         <span x-text="t('task.activates')"></span> <span x-text="formatDateShort(drawer.active_at)" class="font-medium text-slate-600"></span>
                     </p>
-                    <p class="text-xs text-emerald-600 mt-2" x-show="drawer.completed_at">
+                    <p class="text-xs text-emerald-600 mt-2" x-show="!editing && drawer.completed_at">
                         <span x-text="t('task.completed')"></span> <span x-text="formatDateShort(drawer.completed_at)" class="font-medium"></span>
                     </p>
-                    <p class="text-xs text-slate-400 mt-2" x-show="drawer.parent_title">
+                    <p class="text-xs text-slate-400 mt-2" x-show="!editing && drawer.parent_title">
                         <span x-text="t('task.subtask_of')"></span> <span class="font-medium text-slate-600" x-text="drawer.parent_title"></span>
                     </p>
                 </div>
                 <div class="flex items-center gap-0.5 flex-shrink-0">
-                    <button x-show="drawer.is_owner" @click="openEdit(drawer)" class="icon-btn" :title="t('list.edit')">
-                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
-                    </button>
                     <button @click="closeDrawer()" class="icon-btn" :title="t('task.close')">
                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                     </button>
@@ -458,7 +487,7 @@ $user = require_auth();
 
 <!-- ── Create / Edit Modal ─────────────────────────────────────── -->
 <template x-if="modal !== null">
-<div class="modal-bg" @keydown.escape.window="closeModal()" @keydown.ctrl.s.window.prevent="saveForm()">
+<div class="modal-bg" @click.self="closeModal()" @keydown.escape.window="closeModal()" @keydown.ctrl.s.window.prevent="saveForm()">
     <div class="modal-panel max-w-lg mx-4 max-h-[90vh] overflow-y-auto">
         <div class="px-6 pt-5 pb-3 flex items-center justify-between" style="border-bottom:1px solid var(--line)">
             <h3 class="font-semibold tracking-tight" x-text="modal==='create' ? t('form.new') : t('form.edit')"></h3>
@@ -477,7 +506,7 @@ $user = require_auth();
                         class="w-full"
                         @input="parseTagsInTitle()"
                         @keydown.escape="shareDropdown = []; tagDropdown = []"
-                        @keydown="shareDropdownNav($event)">
+                        @keydown="onTitleKeydown($event)">
 
                     <!-- User share dropdown (appears when typing <+) -->
                     <div x-show="shareDropdown.length > 0"
@@ -526,6 +555,7 @@ $user = require_auth();
                     · <code>#Tag</code>
                     · <code>p1</code>
                 </p>
+
             </div>
 
             <!-- Priority -->
@@ -630,7 +660,7 @@ $user = require_auth();
 
         <div class="px-6 pb-5 flex justify-end gap-2">
             <button @click="closeModal()" class="btn-ghost" x-text="t('form.cancel')"></button>
-            <button @click="saveForm()" :disabled="savingForm"
+            <button type="button" @click="saveForm()" :disabled="savingForm"
                 class="btn-primary"
                 x-text="savingForm ? t('form.saving') : t('form.save')"></button>
         </div>
@@ -640,7 +670,7 @@ $user = require_auth();
 
 <!-- ── Settings Modal ──────────────────────────────────────────── -->
 <div x-show="showSettings" class="modal-bg" @click.self="showSettings=false" style="display:none">
-    <div class="modal-panel max-w-md mx-4">
+    <div class="modal-panel max-w-md mx-4 max-h-[90vh] overflow-y-auto">
         <div class="px-6 pt-5 pb-3 flex items-center justify-between" style="border-bottom:1px solid var(--line)">
             <h3 class="font-semibold tracking-tight" x-text="t('settings.title')"></h3>
             <button @click="showSettings=false" class="icon-btn">
@@ -757,6 +787,6 @@ $user = require_auth();
     <template x-if="undoId"><div class="toast-bar"></div></template>
 </div>
 
-<script src="js/app.js?v=17"></script>
+<script src="js/app.js?v=<?= h(substr(hash_file('sha256', __DIR__ . '/js/app.js'), 0, 12)) ?>"></script>
 </body>
 </html>

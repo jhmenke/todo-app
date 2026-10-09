@@ -39,10 +39,6 @@ See [DEPLOY.md](DEPLOY.md) for deployment details. In short:
 
 See [CHANGELOG.md](CHANGELOG.md) for recent changes.
 
-## Using tasks
-
-Task dialogs close with Escape or a click on the surrounding backdrop. The Save button is at the bottom of the create/edit dialog. Successful completion closes the task detail view and offers Undo.
-
 ## Development checks
 
 The JavaScript regression tests require Node.js 18+ and use its built-in test runner, with no npm dependencies. Run them from the repository root:
@@ -56,8 +52,6 @@ php -l index.php
 php -l app.php
 git diff --check
 ```
-
-These tests cover overlapping list loads, title-field submission and autocomplete, and completion from the task detail view. API responses are mocked; they do not exercise a deployed server or a mobile browser.
 
 ## Project structure
 
@@ -81,7 +75,7 @@ todo-app/
 
 ## Authorship
 
-This repository was written with AI coding assistants. The original application was implemented with **Claude** (Anthropic) through [Claude Code](https://claude.com/product/claude-code). Later features and maintenance were implemented with **Grok** (xAI).
+This repository was written with AI coding assistants. The original application was implemented with **Claude** (Anthropic) through [Claude Code](https://claude.com/product/claude-code). Later features and maintenance were implemented with **Grok** (xAI) and Codex (OpenAI).
 
 ## License
 

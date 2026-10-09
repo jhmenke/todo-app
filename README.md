@@ -37,9 +37,11 @@ See [DEPLOY.md](DEPLOY.md) for deployment details. In short:
 4. Schedule cron: `* * * * * php /path/to/todo-app/cron.php`
 5. Open the URL, register the first account, then set `ALLOW_REGISTRATION` to `false`.
 
-Task dialogs close with Escape or a click on the surrounding backdrop. The Save button is at the bottom of the create/edit dialog. Successful completion closes the task detail view and offers Undo.
-
 See [CHANGELOG.md](CHANGELOG.md) for recent changes.
+
+## Using tasks
+
+Task dialogs close with Escape or a click on the surrounding backdrop. The Save button is at the bottom of the create/edit dialog. Successful completion closes the task detail view and offers Undo.
 
 ## Development checks
 

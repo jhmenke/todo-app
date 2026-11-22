@@ -4,9 +4,13 @@ Options -Indexes
 DirectoryIndex index.php
 
 # Protect sensitive files from direct access
-<FilesMatch "^(config.*|cron)\.php$">
+<FilesMatch "^\.|^(config.*|cron)\.php$">
     Require all denied
 </FilesMatch>
+
+<If "%{REQUEST_FILENAME} =~ m#/(?:\.git|debugging|tests)(?:/|$)#">
+    Require all denied
+</If>
 
 <FilesMatch "\.(db|db-wal|db-shm|log)$">
     Require all denied

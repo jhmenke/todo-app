@@ -1,7 +1,7 @@
 <?php
 /**
  * Telegram webhook — POST JSON updates from Telegram.
- * Optional: ?key=SECRET  or header X-Telegram-Bot-Api-Secret-Token
+ * Authenticated with the X-Telegram-Bot-Api-Secret-Token header.
  */
 require_once __DIR__ . '/app.php';
 
@@ -10,10 +10,15 @@ if (!TELEGRAM_BOT_TOKEN) {
     exit('Telegram is not configured');
 }
 
+if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+    header('Allow: POST');
+    http_response_code(405);
+    exit('Method not allowed');
+}
+
 $secret = telegram_webhook_secret();
 $header = (string) ($_SERVER['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN'] ?? '');
-$query  = (string) ($_GET['key'] ?? '');
-if ($secret !== '' && !hash_equals($secret, $header) && !hash_equals($secret, $query)) {
+if ($secret === '' || !hash_equals($secret, $header)) {
     http_response_code(403);
     exit('Forbidden');
 }

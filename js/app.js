@@ -1,4 +1,4 @@
-const COLORS = ['#5b4dff','#ec4899','#f59e0b','#10b981','#3b82f6','#ef4444','#8b5cf6','#14b8a6','#f97316','#64748b'];
+const COLORS = ['#39745c','#ec4899','#f59e0b','#10b981','#3b82f6','#ef4444','#8b5cf6','#14b8a6','#f97316','#64748b'];
 
 function i18n(key, vars = {}) {
     let cur = window.I18N || {};
@@ -11,6 +11,9 @@ function i18n(key, vars = {}) {
 }
 
 function pad2(n) { return String(n).padStart(2, '0'); }
+function localDateKey(date) {
+    return [date.getFullYear(), pad2(date.getMonth() + 1), pad2(date.getDate())].join('-');
+}
 function formatFixedDate(d, withTime = true) {
     const day = `${d.getFullYear()}.${pad2(d.getMonth() + 1)}.${pad2(d.getDate())}`;
     if (!withTime) return day;
@@ -124,16 +127,17 @@ function todoApp() {
         // ── Data ──────────────────────────────────────────────
         todos:        [],
         tags:         [],
-        allUsers:     [],   // all other registered users
         loading:      false,
+        listError:    false,
+        loadedListScope: null,
+        summary:      null,
 
         // ── Filters / Sort ────────────────────────────────────
         filterTagId:    null,
         filterStatus:   'today',
-        sortBy:         'priority',
+        sortBy:         'active_at',
         sortDir:        'asc',
         hideCompleted:  true,
-        sidebarOpen:    false,
         searchQuery:    '',
         searchTimer:    null,
         completedFrom:  '',
@@ -146,27 +150,39 @@ function todoApp() {
         shares:       [],
         files:        [],
         newComment:   '',
+        commentOpen:  false,
+        commentPosting: false,
+        commentError: '',
+        subtaskOpen:  false,
         shareEmail:   '',
         shareError:   '',
         uploading:    false,
         uploadError:  '',
         drawerLoading: false,
+        drawerReq: 0,
+        drawerRefreshReq: 0,
+        drawerRefreshError: false,
         completingDrawer: false,
+        deletingTodo: false,
 
         // ── Edit-in-drawer ────────────────────────────────────
-        editing: false,
+        editing: null,
 
         // ── Create/Edit Modal ─────────────────────────────────
         modal:         null,   // null | 'create' | todo (for edit)
+        quickCreate:   false,
+        showDateFields: false,
         form:          { title: '', active_date: '', active_time: '', tag_ids: [], recur_type: '', recur_interval: 1, recur_days: [], recur_ends_at: '', share_emails: [], priority: 4 },
         newSubtask:    '',
         formError:     '',
         savingForm:    false,
         newTagName:    '',
-        newTagColor:   '#5b4dff',
+        newTagColor:   COLORS[0],
         showTagForm:   false,
-        shareDropdown: [],      // filtered users shown while typing <+
+        shareDropdown: [],      // exact sharing match for the current mention
         shareDropdownIndex: -1, // keyboard-highlighted index in shareDropdown
+        shareLookupTimer: null,
+        shareLookupId: 0,
         tagDropdown: [],        // filtered tags shown while typing #
         tagDropdownIndex: -1,   // keyboard-highlighted index in tagDropdown
 
@@ -177,13 +193,15 @@ function todoApp() {
         settingsLocale:   (typeof window !== 'undefined' && window.LOCALE) ? window.LOCALE : 'en',
         settingsError:    '',
         settingsDisplayName: '',
+        accentTheme: 'evergreen',
+        emailVerified:        false,
+        emailVerificationMsg: '',
+        emailVerificationBusy: false,
         telegramLinked:      false,
         telegramConfigured:  false,
         telegramLinkPending: false,
         telegramLinkUrl:     '',
         telegramError:       '',
-        telegramWebhook:     false,
-        telegramWebhookError:'',
         telegramLinkTimer:   null,
         pwCurrent:   '',
         pwNew:       '',
@@ -194,6 +212,7 @@ function todoApp() {
         // ── Toast / undo ──────────────────────────────────────
         toastMsg:    '',
         toastTimer:  null,
+        toastTodo:   null,
         undoId:      null,
         undoNextId:  null,
         todosReq:    0,
@@ -204,26 +223,33 @@ function todoApp() {
 
         // ── Init ──────────────────────────────────────────────
         async init() {
+            try {
+                if (localStorage.getItem('mytasks-accent') === 'blue') this.accentTheme = 'blue';
+            } catch { /* The workspace can run without local storage. */ }
             await Promise.all([this.loadTags(), this.loadTodos()]);
-            const [s, users] = await Promise.all([
-                this.api('GET', 'settings'),
-                this.api('GET', 'get_users'),
-            ]);
+            const s = await this.api('GET', 'settings');
             if (s.notify_minutes)     this.settingsMinutes     = s.notify_minutes;
             if (s.notify_channel)     this.settingsChannel     = s.notify_channel;
             if (s.locale)             this.settingsLocale      = s.locale;
             if (s.display_name != null) this.settingsDisplayName = s.display_name;
-            this.applyTelegramStatus(s);
+            this.applyAccountStatus(s);
             this.$watch('showSettings', open => {
                 if (open) {
                     this.refreshTelegramStatus().then(() => {
                         if (!this.telegramLinked && this.telegramConfigured) this.prepareTelegramLink();
                     });
-                    this.refreshTelegramWebhook();
                 } else this.stopTelegramPoll();
             });
-            this.allUsers = Array.isArray(users) ? users : [];
-            const openId = parseInt(new URLSearchParams(location.search).get('todo') || '0', 10);
+            const query = new URLSearchParams(location.search);
+            const verification = query.get('email_verification');
+            if (verification) {
+                this.showSettings = true;
+                if (verification !== 'success' || !this.emailVerified) {
+                    this.emailVerificationMsg = this.t('settings.email_verification_invalid');
+                }
+                history.replaceState({}, '', location.pathname);
+            }
+            const openId = parseInt(query.get('todo') || '0', 10);
             if (openId) {
                 const todo = await this.api('GET', 'todo', null, { id: openId });
                 if (!todo.error) await this.openDrawer(todo);
@@ -249,42 +275,69 @@ function todoApp() {
                 if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
                 const res = await fetch(`api.php?${qs}`, opts);
                 if (res.status === 401) { location.href = 'auth.php'; return { error: 'Unauthenticated' }; }
-                return await res.json();
-            } catch (e) {
-                return { error: 'Request failed: ' + e.message };
+                const data = await res.json().catch(() => null);
+                if (!res.ok) return { error: data?.error || this.t('error.request_failed'), status: res.status };
+                return data ?? { error: this.t('error.request_failed') };
+            } catch {
+                return { error: this.t('error.request_failed') };
             }
         },
 
         // ── Load ──────────────────────────────────────────────
-        async loadTodos(silent = false) {
-            const req = ++this.todosReq;
-            if (!silent) this.loading = true;
-            try {
-                const params = { status: this.filterStatus, sort: this.sortBy, dir: this.sortDir };
-                if (this.searchQuery.trim()) params.q = this.searchQuery.trim();
-                if (this.filterTagId) params.tag_id = this.filterTagId;
-                if (this.filterStatus === 'all' && this.hideCompleted) params.hide_completed = '1';
-                if (this.filterStatus === 'completed') {
-                    if (this.completedFrom) params.completed_from = this.completedFrom;
-                    if (this.completedTo)   params.completed_to   = this.completedTo;
-                }
-                const data = await this.api('GET', 'todos', null, params);
-                if (req !== this.todosReq) return;
-                if (!Array.isArray(data)) return;
-                this.todos = data;
-                if (silent && this.drawer) await this.refreshOpenDrawer();
-            } finally {
-                // A background refresh can supersede a foreground load that hid the list.
-                // The latest request must release loading regardless of how it started.
-                if (req === this.todosReq) this.loading = false;
+        listScope() {
+            const q = this.searchQuery.trim();
+            if (q) return { status: 'all', q };
+
+            const scope = { status: this.filterStatus };
+            if (this.filterTagId) scope.tag_id = this.filterTagId;
+            if (scope.status === 'all' && this.hideCompleted) scope.hide_completed = '1';
+            if (scope.status === 'completed') {
+                if (this.completedFrom) scope.completed_from = this.completedFrom;
+                if (this.completedTo) scope.completed_to = this.completedTo;
             }
+            return scope;
+        },
+
+        async loadTodos(silent = false) {
+            if (this.searchTimer !== null) {
+                if (silent) return;
+                clearTimeout(this.searchTimer);
+                this.searchTimer = null;
+            }
+            const req = ++this.todosReq;
+            const scope = this.listScope();
+            const params = { ...scope, sort: this.sortBy, dir: this.sortDir, include_summary: '1' };
+            if (!silent) {
+                this.loading = true;
+                this.listError = false;
+            }
+            const data = await this.api('GET', 'todos', null, params);
+            if (req !== this.todosReq) return;
+
+            const todos = Array.isArray(data) ? data : data?.todos;
+            this.listError = !Array.isArray(todos);
+            if (!this.listError) {
+                this.todos = todos;
+                this.loadedListScope = JSON.stringify(scope);
+                this.summary = data.summary ?? this.summary;
+            }
+            this.loading = false;
+            if (silent && this.drawer && !this.savingForm && !this.completingDrawer) await this.refreshOpenDrawer();
         },
 
         async refreshOpenDrawer() {
             if (!this.drawer) return;
+            const req = this.drawerReq;
+            const refresh = ++this.drawerRefreshReq;
             const full = await this.api('GET', 'todo', null, { id: this.drawer.id });
-            if (full.error) this.closeDrawer();
-            else this.drawer = full;
+            if (req !== this.drawerReq || refresh !== this.drawerRefreshReq) return;
+            if (full.status === 404) {
+                this.closeDrawer();
+                this.toast(full.error, 6000);
+                return;
+            }
+            this.drawerRefreshError = !!full.error;
+            if (!this.drawerRefreshError) this.drawer = full;
         },
 
         async loadTags() {
@@ -294,35 +347,67 @@ function todoApp() {
 
         // ── Filters ───────────────────────────────────────────
         setStatus(s) {
+            if (this.drawer) this.closeDrawer(false);
+            this.searchQuery = '';
             this.filterStatus = s;
-            this.sidebarOpen = false;
+            this.filterTagId = null;
+            if (s !== 'completed' && this.sortBy === 'completed_at') {
+                this.sortBy = 'active_at';
+                this.sortDir = 'asc';
+            }
             this.loadTodos();
         },
         setTag(id) {
+            if (this.drawer) this.closeDrawer(false);
+            this.searchQuery = '';
             this.filterTagId = (this.filterTagId === id) ? null : id;
-            this.sidebarOpen = false;
+            this.filterStatus = 'all';
+            if (this.sortBy === 'completed_at') {
+                this.sortBy = 'active_at';
+                this.sortDir = 'asc';
+            }
             this.loadTodos();
         },
         filterTitle() {
+            if (this.searchQuery.trim()) return this.t('list.search_results');
             if (this.filterTagId) {
                 const t = this.tags.find(x => x.id === this.filterTagId);
                 return t ? t.name : 'Tag';
             }
             return ({
                 all: this.t('nav.all_tasks'),
-                today: this.t('nav.today'),
+                today: this.t('nav.overview'),
+                scheduled: this.t('nav.scheduled'),
+                scheduled_today: this.t('nav.today'),
+                overdue: this.t('nav.overdue'),
+                upcoming: this.t('nav.upcoming'),
                 pending: this.t('nav.pending'),
                 active: this.t('nav.active'),
                 completed: this.t('nav.completed'),
             })[this.filterStatus] || this.t('nav.tasks');
         },
         onSearchInput() {
-            clearTimeout(this.searchTimer);
-            this.searchTimer = setTimeout(() => this.loadTodos(), 200);
+            if (this.drawer) this.closeDrawer(false);
+            if (this.searchTimer !== null) clearTimeout(this.searchTimer);
+            this.todosReq++;
+            this.loading = true;
+            this.listError = false;
+            this.searchTimer = setTimeout(() => {
+                this.searchTimer = null;
+                this.loadTodos();
+            }, 200);
         },
         clearSearch() {
+            if (!this.searchQuery) return;
+            if (this.drawer) this.closeDrawer(false);
             this.searchQuery = '';
-            this.loadTodos();
+            return this.loadTodos();
+        },
+        showsLoadedList() {
+            return !this.loading && this.loadedListScope === JSON.stringify(this.listScope());
+        },
+        isOverview() {
+            return this.filterStatus === 'today' && !this.searchQuery.trim();
         },
         setSort(field) {
             if (this.sortBy === field) {
@@ -338,8 +423,67 @@ function todoApp() {
             return this.sortDir === 'asc' ? ' ↑' : ' ↓';
         },
 
+        workspaceDate() {
+            return this.summary?.local_date || localDateKey(new Date());
+        },
+        formatWorkspaceDate(day, options) {
+            const locale = (typeof window !== 'undefined' && window.LOCALE === 'de') ? 'de-DE' : 'en-GB';
+            return new Intl.DateTimeFormat(locale, options).format(new Date(day + 'T00:00:00'));
+        },
+        taskGroups() {
+            const today = this.workspaceDate();
+            const next = new Date(today + 'T00:00:00');
+            next.setDate(next.getDate() + 1);
+            const tomorrow = localDateKey(next);
+            const grouped = new Map();
+            if (this.isOverview()) {
+                grouped.set('overdue', []);
+                grouped.set(today, []);
+            }
+            const getKey = task => {
+                if (task.completed_at && this.leavingId !== task.id) return 'completed';
+                const day = task.active_at?.slice(0, 10);
+                if (!day) return 'unscheduled';
+                return day < today ? 'overdue' : day;
+            };
+            const push = (task, key, parent = null) => {
+                if (!grouped.has(key)) grouped.set(key, []);
+                grouped.get(key).push({
+                    task,
+                    nested: parent !== null && key === getKey(parent),
+                    parentTitle: parent?.title || task.parent_title,
+                });
+            };
+            for (const todo of this.todos) {
+                push(todo, getKey(todo));
+                for (const child of todo.children || []) push(child, getKey(child), todo);
+            }
+            const special = { overdue: 0, unscheduled: 2, completed: 3 };
+            const keys = [...grouped.keys()].sort((a, b) =>
+                (special[a] ?? 1) - (special[b] ?? 1) || a.localeCompare(b));
+            return keys.map(key => ({
+                key,
+                tasks: grouped.get(key),
+                date: key in special ? '' : this.formatWorkspaceDate(key, { day: 'numeric', month: 'short' }),
+                label: key in special ? this.t('nav.' + key)
+                    : key === today ? this.t('nav.today')
+                    : key === tomorrow ? this.t('nav.tomorrow')
+                    : this.formatWorkspaceDate(key, { weekday: 'long' }),
+            }));
+        },
+        taskSchedule(task, groupKey) {
+            if (!task.active_at) return '';
+            const date = new Date(task.active_at.replace(' ', 'T'));
+            if (groupKey !== task.active_at.slice(0, 10)) return formatFixedDate(date, true);
+            return new Intl.DateTimeFormat(window.LOCALE === 'de' ? 'de-DE' : 'en-US', {
+                hour: 'numeric', minute: '2-digit',
+            }).format(date);
+        },
+
         // ── Create / Edit Modal ───────────────────────────────
         openCreate() {
+            if (this.savingForm) return;
+            this.cancelInlineEdit();
             this.form = {
                 title: '', active_date: '', active_time: '', tag_ids: this.filterTagId ? [this.filterTagId] : [],
                 recur_type: '', recur_interval: 1, recur_days: [], recur_ends_at: '',
@@ -347,10 +491,14 @@ function todoApp() {
             };
             this.formError     = '';
             this.showTagForm   = false;
-            this.shareDropdown = [];
+            this.clearShareDropdown();
+            this.showDateFields = false;
+            this.quickCreate   = true;
             this.modal         = 'create';
         },
         openEdit(todo) {
+            if (this.savingForm) return;
+            this.cancelInlineEdit();
             const at = todo.active_at ? todo.active_at.replace(' ', 'T') : null;
             this.form = {
                 id:             todo.id,
@@ -368,10 +516,38 @@ function todoApp() {
             };
             this.formError     = '';
             this.showTagForm   = false;
-            this.shareDropdown = [];
+            this.clearShareDropdown();
+            this.quickCreate   = false;
             this.modal         = todo;
         },
-        closeModal() { this.modal = null; },
+        closeModal() {
+            this.clearShareDropdown();
+            this.modal = null;
+            this.quickCreate = false;
+        },
+
+        scheduleDate(daysAhead) {
+            const day = new Date(this.workspaceDate() + 'T00:00:00');
+            day.setDate(day.getDate() + daysAhead);
+            return localDateKey(day);
+        },
+
+        chooseScheduleDate(daysAhead) {
+            this.form.active_date = this.scheduleDate(daysAhead);
+        },
+
+        clearSchedule() {
+            this.form.active_date = '';
+            this.form.active_time = '';
+        },
+
+        scheduleChoiceLabel() {
+            const { active_date: date, active_time: time } = this.form;
+            const label = date && ![this.scheduleDate(0), this.scheduleDate(1)].includes(date)
+                ? this.formatWorkspaceDate(date, { day: 'numeric', month: 'short', year: 'numeric' })
+                : this.t('form.choose_date');
+            return time ? label + ' · ' + time : label;
+        },
 
         toggleFormTag(id) {
             const i = this.form.tag_ids.indexOf(id);
@@ -386,10 +562,12 @@ function todoApp() {
 
         async saveForm() {
             if (this.savingForm) return;
+            if (this.modal === 'create' || this.modal?.title !== this.form.title) this.parseTagsInTitle(true);
             if (!this.form.title.trim()) { this.formError = this.t('form.title_required'); return; }
             this.savingForm = true;
             this.formError  = '';
             const isCreate  = this.modal === 'create';
+            const recipients = [...this.form.share_emails];
             try {
                 const payload = { ...this.form };
                 payload.active_at = this.resolveActiveAt(payload.active_date, payload.active_time);
@@ -403,30 +581,20 @@ function todoApp() {
 
                 // Apply pending shares
                 const shareErrors = [];
-                for (const email of this.form.share_emails) {
+                for (const email of recipients) {
                     const r = await this.api('POST', 'add_share', { todo_id: result.id, email });
                     if (r.error) shareErrors.push(email);
                 }
 
-                this.modal = null;
+                this.closeModal();
 
-                // If the saved todo would be hidden in the current filter, switch to show it
-                const at  = result.active_at ? new Date(result.active_at.replace(' ', 'T')) : null;
-                const now = new Date();
-                const sharedNote = this.form.share_emails.length && !shareErrors.length
-                    ? this.t('toast.shared_n', { n: this.form.share_emails.length }) : '';
+                const sharedNote = recipients.length && !shareErrors.length
+                    ? this.t('toast.shared_n', { n: recipients.length }) : '';
                 const shareFailNote = shareErrors.length
                     ? this.t('toast.share_fail', { emails: shareErrors.join(', ') }) : '';
 
-                if (at && at <= now && !result.completed_at && this.filterStatus === 'pending') {
-                    this.filterStatus = 'active';
-                    this.toast((isCreate ? this.t('toast.created_active') : this.t('toast.saved_active')) + sharedNote + shareFailNote);
-                } else if (result.completed_at && this.filterStatus !== 'completed') {
-                    this.filterStatus = 'completed';
-                    this.toast(this.t('toast.saved_completed') + sharedNote + shareFailNote);
-                } else {
-                    this.toast((isCreate ? this.t('toast.created') : this.t('toast.saved')) + sharedNote + shareFailNote);
-                }
+                const savedMessage = this.t(isCreate ? 'toast.created' : 'toast.saved') + sharedNote + shareFailNote;
+                this.toast(savedMessage, isCreate ? 10000 : 3000, false, isCreate ? result : null);
 
                 await this.loadTodos();
                 if (this.drawer && this.drawer.id === result.id) this.drawer = result;
@@ -442,30 +610,69 @@ function todoApp() {
                 this.tags.push(tag);
                 this.form.tag_ids.push(tag.id);
                 this.newTagName  = '';
-                this.newTagColor = '#5b4dff';
+                this.newTagColor = COLORS[0];
                 this.showTagForm = false;
             }
         },
 
         // ── Drawer ────────────────────────────────────────────
         async openDrawer(todo) {
+            const req = ++this.drawerReq;
             this.drawer      = todo;
             this.drawerTab   = 'comments';
+            this.comments    = [];
+            this.shares      = [];
             this.newComment  = '';
+            this.commentOpen = false;
+            this.commentPosting = false;
+            this.commentError = '';
             this.newSubtask  = '';
+            this.subtaskOpen = false;
             this.shareEmail  = '';
             this.shareError  = '';
             this.uploadError = '';
+            this.uploading   = false;
             this.files       = [];
-            this.editing     = false;
+            this.editing     = null;
+            this.drawerLoading = true;
+            this.drawerRefreshError = false;
+            this.$nextTick?.(() => {
+                if (req !== this.drawerReq) return;
+                const close = [...this.$refs.plannerWindow.querySelectorAll('[data-close-task]')]
+                    .find(button => button.getClientRects().length);
+                close?.focus({ preventScroll: !close.classList.contains('detail-back') });
+            });
             const full = await this.api('GET', 'todo', null, { id: todo.id });
-            if (!full.error) this.drawer = full;
+            if (req !== this.drawerReq) return;
+            if (full.error) {
+                this.closeDrawer();
+                this.toast(full.error);
+                return;
+            }
+            this.drawer = full;
             await this.loadDrawerData(todo.id);
         },
-        closeDrawer() { this.drawer = null; },
+        closeDrawer(restoreFocus = true) {
+            const id = this.drawer?.id;
+            const planner = this.$refs?.plannerWindow;
+            const heading = this.$refs?.workspaceTitle;
+            this.drawerReq++;
+            this.drawer = null;
+            this.editing = null;
+            this.drawerLoading = false;
+            if (!restoreFocus || !id || !planner) return;
+            this.$nextTick?.(() => requestAnimationFrame(() => {
+                if (this.drawer) return;
+                const opener = [...planner.querySelectorAll('[data-task-id]')]
+                    .find(button => Number(button.dataset.taskId) === Number(id));
+                (opener || heading)?.focus({ preventScroll: true });
+            }));
+        },
 
-        beginInlineEdit(todo = this.drawer) {
-            if (!todo || !todo.is_owner) return;
+        beginInlineEdit(field = 'title') {
+            const todo = this.drawer;
+            if (!todo || !todo.is_owner || this.savingForm) return;
+            if (this.modal) this.closeModal();
             const at = todo.active_at ? todo.active_at.replace(' ', 'T') : null;
             this.form = {
                 id: todo.id,
@@ -473,38 +680,53 @@ function todoApp() {
                 active_date: at ? at.slice(0, 10) : '',
                 active_time: at ? at.slice(11, 16) : '',
                 tag_ids: (todo.tags || []).map(tag => tag.id),
-                recur_type: todo.recur_type || '',
-                recur_interval: todo.recur_interval || 1,
-                recur_days: todo.recur_days ? JSON.parse(todo.recur_days) : [],
-                recur_ends_at: todo.recur_ends_at ? todo.recur_ends_at.slice(0, 16) : '',
-                share_emails: [],
                 priority: todo.priority || 4,
-                parent_id: todo.parent_id || null,
             };
             this.formError = '';
-            this.editing = true;
+            this.editing = field;
+            this.showDateFields = false;
+            this.$nextTick?.(() => {
+                const input = this.$refs.inlineEdit?.querySelector('[data-edit-field="' + field + '"]');
+                const control = [...(input?.querySelectorAll('input, select, button') || [])]
+                    .find(element => element.getClientRects().length);
+                control?.focus();
+            });
         },
 
         cancelInlineEdit() {
-            this.editing = false;
+            this.editing = null;
             this.formError = '';
         },
 
         async saveInlineEdit() {
-            if (!this.form.title.trim()) { this.formError = this.t('form.title_required'); return; }
+            if (this.savingForm || !this.editing) return;
+            const field = this.editing;
+            const payload = { id: this.form.id };
+            if (field === 'title') {
+                if (!this.form.title.trim()) { this.formError = this.t('form.title_required'); return; }
+                payload.title = this.form.title;
+            } else if (field === 'schedule') {
+                payload.active_at = this.resolveActiveAt(this.form.active_date, this.form.active_time);
+            } else if (field === 'tags') {
+                payload.tag_ids = [...this.form.tag_ids];
+            } else if (field === 'priority') {
+                payload.priority = Number(this.form.priority);
+            }
+            const req = this.drawerReq;
             this.savingForm = true;
             this.formError = '';
             try {
-                const payload = { ...this.form };
-                payload.active_at = this.resolveActiveAt(payload.active_date, payload.active_time);
-                delete payload.active_date;
-                delete payload.active_time;
-                delete payload.share_emails;
-                if (!payload.recur_type) { payload.recur_type = null; payload.recur_days = []; payload.recur_ends_at = ''; }
                 const result = await this.api('POST', 'update_todo', payload);
+                if (req !== this.drawerReq) {
+                    if (!result.error) await this.loadTodos(true);
+                    return;
+                }
                 if (result.error) { this.formError = result.error; return; }
+                this.drawerRefreshReq++;
+                this.drawerRefreshError = false;
                 this.drawer = result;
-                this.editing = false;
+                this.editing = null;
+                this.$nextTick?.(() => this.$refs.inlineEditTrigger?.focus());
                 await this.loadTodos();
                 this.toast(this.t('toast.saved'));
             } finally {
@@ -513,12 +735,14 @@ function todoApp() {
         },
 
         async loadDrawerData(id) {
+            const req = this.drawerReq;
             this.drawerLoading = true;
             const [comments, shares, files] = await Promise.all([
                 this.api('GET', 'comments', null, { todo_id: id }),
                 this.drawer?.is_owner ? this.api('GET', 'shares', null, { todo_id: id }) : Promise.resolve([]),
                 this.api('GET', 'get_files', null, { todo_id: id }),
             ]);
+            if (req !== this.drawerReq) return;
             this.comments      = Array.isArray(comments) ? comments : [];
             this.shares        = Array.isArray(shares) ? shares : [];
             this.files         = Array.isArray(files) ? files : [];
@@ -527,7 +751,8 @@ function todoApp() {
 
         async uploadFile(event) {
             const input = event.target;
-            if (!input.files.length) return;
+            if (!input.files.length || !this.drawer) return;
+            const req = this.drawerReq;
             this.uploading   = true;
             this.uploadError = '';
             const fd = new FormData();
@@ -540,21 +765,23 @@ function todoApp() {
                     body: fd,
                 });
                 const result = await res.json();
+                if (req !== this.drawerReq) return;
                 if (result.error) { this.uploadError = result.error; return; }
                 result.uploader_email = result.uploader_email || '';
                 this.files.push(result);
                 input.value = '';
             } catch (e) {
-                this.uploadError = 'Upload failed: ' + e.message;
+                if (req === this.drawerReq) this.uploadError = 'Upload failed: ' + e.message;
             } finally {
-                this.uploading = false;
+                if (req === this.drawerReq) this.uploading = false;
             }
         },
 
         async deleteFile(id) {
+            const req = this.drawerReq;
             if (!confirm(this.t('files.delete_confirm'))) return;
             const r = await this.api('POST', 'delete_file', { id });
-            if (!r.error) this.files = this.files.filter(f => f.id !== id);
+            if (!r.error && req === this.drawerReq) this.files = this.files.filter(f => f.id !== id);
         },
 
         fileUrl(file) { return `download.php?f=${encodeURIComponent(file.stored_as)}`; },
@@ -580,49 +807,88 @@ function todoApp() {
 
         async addComment() {
             const body = this.newComment.trim();
-            if (!body) return;
-            const c = await this.api('POST', 'add_comment', { todo_id: this.drawer.id, body });
-            if (!c.error) { this.comments.push(c); this.newComment = ''; this.updateCommentCount(1); }
+            if (!body || !this.drawer || this.commentPosting) return;
+            const id = this.drawer.id;
+            const req = this.drawerReq;
+            this.commentPosting = true;
+            this.commentError = '';
+            try {
+                const comment = await this.api('POST', 'add_comment', { todo_id: id, body });
+                if (!comment.error) this.updateCommentCount(id);
+                if (req !== this.drawerReq) return;
+                if (comment.error) { this.commentError = comment.error; return; }
+                this.comments.push(comment);
+                this.closeComment();
+            } finally {
+                if (req === this.drawerReq) this.commentPosting = false;
+            }
+        },
+        closeComment() {
+            this.newComment = '';
+            this.commentOpen = false;
+            this.commentError = '';
+            this.$nextTick?.(() => this.$refs.commentTrigger?.focus());
         },
 
         async addShare() {
             this.shareError = '';
             const email = this.shareEmail.trim();
-            if (!email) return;
+            if (!email || !this.drawer) return;
+            const req = this.drawerReq;
             const result = await this.api('POST', 'add_share', { todo_id: this.drawer.id, email });
+            if (req !== this.drawerReq) return;
             if (result.error) { this.shareError = result.error; return; }
             this.shares.push(result);
             this.shareEmail = '';
         },
 
         async removeShare(userId) {
-            await this.api('POST', 'remove_share', { todo_id: this.drawer.id, user_id: userId });
-            this.shares = this.shares.filter(s => s.user_id !== userId);
+            if (!this.drawer) return;
+            const req = this.drawerReq;
+            const result = await this.api('POST', 'remove_share', { todo_id: this.drawer.id, user_id: userId });
+            if (!result.error && req === this.drawerReq) this.shares = this.shares.filter(s => s.user_id !== userId);
         },
 
-        updateCommentCount(delta) {
-            if (this.drawer) this.drawer.comment_count = (this.drawer.comment_count || 0) + delta;
-            const t = this.todos.find(t => t.id === this.drawer?.id);
-            if (t) t.comment_count = (t.comment_count || 0) + delta;
+        updateCommentCount(id) {
+            const task = this.todos.flatMap(todo => [todo, ...(todo.children || [])]).find(todo => todo.id === id);
+            if (task) task.comment_count = (task.comment_count || 0) + 1;
+            if (this.drawer?.id === id && this.drawer !== task) {
+                this.drawer.comment_count = (this.drawer.comment_count || 0) + 1;
+            }
+        },
+
+        dismissWorkspaceOverlay() {
+            if (this.showSettings) this.showSettings = false;
+            else if (this.modal) this.closeModal();
+            else if (this.editing) this.cancelInlineEdit();
+            else if (this.commentOpen && !this.commentPosting) this.closeComment();
+            else if (this.subtaskOpen) { this.subtaskOpen = false; this.newSubtask = ''; }
+            else if (this.drawer) this.closeDrawer();
         },
 
         // ── Complete / Delete ─────────────────────────────────
         async addSubtask() {
             const title = (this.newSubtask || '').trim();
             if (!title || !this.drawer) return;
+            const id = this.drawer.id;
+            const req = this.drawerReq;
             const r = await this.api('POST', 'create_todo', {
                 title,
-                parent_id: this.drawer.id,
+                parent_id: id,
                 priority: this.drawer.priority || 4,
             });
             if (r.error) { this.toast(r.error); return; }
-            this.newSubtask = '';
-            const full = await this.api('GET', 'todo', null, { id: this.drawer.id });
-            if (!full.error) this.drawer = full;
+            if (req === this.drawerReq) {
+                this.newSubtask = '';
+                this.subtaskOpen = false;
+                await this.refreshOpenDrawer();
+                this.$nextTick?.(() => this.$refs.subtaskTrigger?.focus());
+            }
             await this.loadTodos();
         },
 
         hideCompletedInView() {
+            if (this.searchQuery.trim()) return false;
             return this.filterStatus !== 'completed' && !(this.filterStatus === 'all' && !this.hideCompleted);
         },
         removeTodoFromList(id) {
@@ -672,10 +938,6 @@ function todoApp() {
             }
             if (this.drawer?.id === todo.id) this.closeDrawer();
             await this.loadTodos(true);
-            if (this.drawer) {
-                const full = await this.api('GET', 'todo', null, { id: this.drawer.id });
-                if (!full.error) this.drawer = full;
-            }
         },
 
         async toggleDrawerComplete(e) {
@@ -708,40 +970,55 @@ function todoApp() {
             if (result.error) { this.toast(result.error); return; }
             this.toast(this.t('toast.restored'));
             await this.loadTodos();
-            if (this.drawer) {
-                const full = await this.api('GET', 'todo', null, { id: this.drawer.id });
-                if (!full.error) this.drawer = full;
-            }
+            if (this.drawer) await this.refreshOpenDrawer();
         },
 
         async deleteTodo(id) {
-            if (!confirm(this.t('confirm.delete_todo'))) return;
-            await this.api('POST', 'delete_todo', { id });
-            this.todos = this.todos.filter(t => t.id !== id);
-            if (this.drawer?.id === id) this.closeDrawer();
-            this.toast(this.t('toast.deleted'));
+            if (this.deletingTodo || !confirm(this.t('confirm.delete_todo'))) return;
+            this.deletingTodo = true;
+            try {
+                const result = await this.api('POST', 'delete_todo', { id });
+                if (!result.ok) {
+                    this.toast(result.error || this.t('error.request_failed'), 6000);
+                    return;
+                }
+                this.removeTodoFromList(id);
+                if (this.drawer?.id === id) this.closeDrawer();
+                this.toast(this.t('toast.deleted'));
+                await this.loadTodos(true);
+            } finally {
+                this.deletingTodo = false;
+            }
         },
 
         // ── Tags management ───────────────────────────────────
         async deleteTag(id) {
             if (!confirm(this.t('confirm.delete_tag'))) return;
-            await this.api('POST', 'delete_tag', { id });
+            const result = await this.api('POST', 'delete_tag', { id });
+            if (!result.ok) {
+                this.toast(result.error || this.t('error.request_failed'), 6000);
+                return;
+            }
             this.tags = this.tags.filter(t => t.id !== id);
             if (this.filterTagId === id) { this.filterTagId = null; }
             await this.loadTodos();
         },
 
         // ── Settings ──────────────────────────────────────────
-        applyTelegramStatus(s) {
+        setAccent(accent) {
+            this.accentTheme = accent === 'blue' ? 'blue' : 'evergreen';
+            try { localStorage.setItem('mytasks-accent', this.accentTheme); } catch { /* Optional persistence. */ }
+        },
+
+        applyAccountStatus(s) {
             if (!s || s.error) return;
             this.telegramLinked     = !!s.telegram_linked;
             this.telegramConfigured = !!s.telegram_configured;
-            this.telegramWebhook    = !!s.telegram_webhook;
-            this.telegramWebhookError = s.telegram_webhook_error || '';
+            this.emailVerified      = !!s.email_verified;
         },
         async refreshTelegramStatus() {
             const s = await this.api('GET', 'settings');
-            this.applyTelegramStatus(s);
+            this.applyAccountStatus(s);
             if (this.telegramLinked) {
                 this.telegramLinkPending = false;
                 this.telegramLinkUrl = '';
@@ -776,22 +1053,6 @@ function todoApp() {
                 this.telegramLinkTimer = null;
             }
         },
-        async refreshTelegramWebhook() {
-            if (!this.telegramConfigured) return;
-            const r = await this.api('GET', 'telegram_webhook');
-            if (r.error) return;
-            this.telegramWebhook = !!r.telegram_webhook;
-            this.telegramWebhookError = r.telegram_webhook_error || '';
-        },
-        async setTelegramWebhook(enable) {
-            this.telegramError = '';
-            this.telegramWebhookError = '';
-            const r = await this.api('POST', 'telegram_webhook', { enable: !!enable });
-            if (r.error) { this.telegramError = r.error; return; }
-            this.telegramWebhook = !!r.telegram_webhook;
-            this.telegramWebhookError = r.telegram_webhook_error || '';
-            this.toast(this.telegramWebhook ? this.t('settings.telegram_instant_on') : this.t('settings.telegram_instant_off'));
-        },
         async unlinkTelegram() {
             this.telegramError = '';
             const r = await this.api('POST', 'telegram_unlink');
@@ -818,11 +1079,20 @@ function todoApp() {
             this.toast(this.t('settings.saved'));
         },
 
+        async sendEmailVerification() {
+            if (this.emailVerificationBusy) return;
+            this.emailVerificationBusy = true;
+            const result = await this.api('POST', 'verify_email');
+            this.emailVerificationBusy = false;
+            this.emailVerificationMsg = result.error || this.t('settings.email_verification_sent');
+        },
+
         async changePassword() {
             this.pwError = ''; this.pwOk = false;
             if (this.pwNew !== this.pwNew2) { this.pwError = this.t('auth.password_mismatch'); return; }
             const r = await this.api('POST', 'change_password', { current: this.pwCurrent, new: this.pwNew });
             if (r.error) { this.pwError = r.error; return; }
+            window.CSRF_TOKEN = r.csrf_token;
             this.pwCurrent = this.pwNew = this.pwNew2 = '';
             this.pwOk = true;
         },
@@ -833,23 +1103,25 @@ function todoApp() {
         },
 
         // ── Helpers ───────────────────────────────────────────
-        toast(msg, ms = 3000, keepUndo = false) {
+        toast(msg, ms = 3000, keepUndo = false, todo = null) {
             this.toastMsg = msg;
+            this.toastTodo = todo;
             if (!keepUndo) this.clearUndo();
             clearTimeout(this.toastTimer);
             this.toastTimer = setTimeout(() => {
                 this.toastMsg = '';
+                this.toastTodo = null;
                 this.clearUndo();
             }, ms);
         },
 
-        formatDate(dt) {
-            if (!dt) return '';
-            const d = new Date(dt.replace(' ', 'T'));
-            const now = new Date();
-            const diff = d - now;
-            if (diff < 0 && diff > -86400000) return this.t('date.active_now');
-            return formatFixedDate(d, true);
+        openToastTodo() {
+            const todo = this.toastTodo;
+            if (!todo) return;
+            clearTimeout(this.toastTimer);
+            this.toastMsg = '';
+            this.toastTodo = null;
+            return this.openDrawer(todo);
         },
 
         formatDateShort(dt) {
@@ -865,11 +1137,11 @@ function todoApp() {
 
         userLabel(u) {
             const n = (u && u.display_name) ? String(u.display_name).trim() : '';
-            return n || (u && u.email) || '';
+            return (u && u.label) || n || (u && u.email) || '';
         },
 
         // Opt-in tokens: <datetime> or "datetime", <+email>, +Name, #tag, p1–p4.
-        parseTagsInTitle() {
+        parseTagsInTitle(commit = false) {
             const re = /<(\+?)([^>]+)>|["“„](\+?)([^"“”„]+)["“”]/g;
             let newTitle = this.form.title;
             let match;
@@ -898,34 +1170,44 @@ function todoApp() {
                 newTitle = newTitle.replace(/(?:^|\s)p[1-4](?=\s|$)/gi, ' ').replace(/\s+/g, ' ').trim();
             }
 
-            const plus = [...newTitle.matchAll(/(?:^|\s)\+([^\s+]+)/g)];
-            for (const m of plus) {
-                const who = m[1].trim();
-                if (who && !this.form.share_emails.includes(who)) this.form.share_emails.push(who);
+            const plus = commit ? /(?:^|\s)\+([^\s+]+)(?=\s|$)/g : /(?:^|\s)\+([^\s+]+)(?=\s)/g;
+            newTitle = newTitle.replace(plus, (_, who) => {
+                if (!this.form.share_emails.includes(who)) this.form.share_emails.push(who);
+                return ' ';
+            });
+            if (newTitle !== this.form.title && this.form.share_emails.length) {
+                newTitle = newTitle.replace(/  +/g, ' ').trim();
             }
-            if (plus.length) newTitle = newTitle.replace(/(?:^|\s)\+[^\s+]+/g, ' ').replace(/\s+/g, ' ').trim();
 
             if (newTitle !== this.form.title) this.form.title = newTitle;
-            this.updateShareDropdown();
+            if (!commit) this.updateShareDropdown();
+            else this.clearShareDropdown();
             this.updateTagDropdown();
         },
 
+        clearShareDropdown() {
+            if (this.shareLookupTimer !== null) clearTimeout(this.shareLookupTimer);
+            this.shareLookupTimer = null;
+            this.shareLookupId++;
+            this.shareDropdown = [];
+            this.shareDropdownIndex = -1;
+        },
+
         updateShareDropdown() {
-            const angled = this.form.title.match(/<\+([^>]*)$/);
-            const bare = !angled ? this.form.title.match(/(?:^|\s)\+([^\s+]*)$/) : null;
-            const m = angled || bare;
-            if (m !== null) {
-                const q = m[1].toLowerCase();
-                this.shareDropdown = this.allUsers.filter(u => {
-                    const label = this.userLabel(u).toLowerCase();
-                    const email = (u.email || '').toLowerCase();
-                    const taken = this.form.share_emails.includes(u.email) || (u.display_name && this.form.share_emails.includes(u.display_name));
-                    return !taken && (label.includes(q) || email.includes(q));
-                });
-            } else {
-                this.shareDropdown = [];
-            }
-            this.shareDropdownIndex = this.shareDropdown.length ? 0 : -1;
+            this.clearShareDropdown();
+            const title = this.form.title;
+            const match = title.match(/<\+([^>]*)$/) || title.match(/(?:^|\s)\+([^\s+]*)$/);
+            const query = match?.[1].trim();
+            if (!query) return;
+            const lookup = this.shareLookupId;
+            this.shareLookupTimer = setTimeout(async () => {
+                this.shareLookupTimer = null;
+                const user = await this.api('GET', 'find_user', null, { q: query });
+                if (lookup !== this.shareLookupId || this.form.title !== title || !user.label) return;
+                if (this.form.share_emails.includes(user.label)) return;
+                this.shareDropdown = [user];
+                this.shareDropdownIndex = 0;
+            }, 200);
         },
 
         onTitleKeydown(e) {
@@ -994,7 +1276,7 @@ function todoApp() {
             if (who && !this.form.share_emails.includes(who)) {
                 this.form.share_emails.push(who);
             }
-            this.shareDropdown = [];
+            this.clearShareDropdown();
         },
 
         resolveActiveAt(date, time) {

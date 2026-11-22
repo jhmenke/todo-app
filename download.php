@@ -19,7 +19,7 @@ if (!can_access_todo($uid, (int)$file['todo_id'])) {
     http_response_code(403); exit('Forbidden');
 }
 
-$path = __DIR__ . '/uploads/' . $file['uploaded_by'] . '/' . $file['todo_id'] . '/' . $stored_as;
+$path = UPLOADS_PATH . '/' . $file['uploaded_by'] . '/' . $file['todo_id'] . '/' . $stored_as;
 if (!is_file($path)) { http_response_code(404); exit('File missing'); }
 
 $mime = $file['mime_type'] ?: 'application/octet-stream';

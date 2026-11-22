@@ -1,6 +1,8 @@
 db/*
 !db/.gitkeep
 !db/.htaccess
+/uploads/*
+!/uploads/.htaccess
 config_jhmenke.php
 DEPLOY_jhmenke.md
 *.log

@@ -5,19 +5,21 @@ define('APP_URL',  'http://localhost/todo-app');  // no trailing slash — set t
 
 // After creating your first account, set this to false to lock registration.
 // The first user can always register even when this is false.
-define('ALLOW_REGISTRATION', true);
+define('ALLOW_REGISTRATION', false);
 
-// ─── Database ─────────────────────────────────────────────────
+// ─── Private storage ──────────────────────────────────────────
+// Local development defaults. Set both paths outside the webroot in production.
 define('DB_PATH', __DIR__ . '/db/todos.db');
+define('UPLOADS_PATH', __DIR__ . '/uploads');
 
 // ─── Uploads ──────────────────────────────────────────────────
 define('MAX_UPLOAD_BYTES', 20 * 1024 * 1024);  // 20 MB
 
 // ─── Cron ─────────────────────────────────────────────────────
-define('CRON_LOG_PATH',    __DIR__ . '/cron.log');
+define('CRON_LOG_PATH',    dirname(DB_PATH) . '/cron.log');
 define('CRON_DAILY_LIMIT', 100);  // max notifications per day across all users
-// HTTP trigger: cron.php?key=SECRET — leave empty for CLI only (recommended)
-define('CRON_SECRET', '');
+// Optional HTTP cron authentication via X-Cron-Secret. Prefer CLI.
+define('CRON_HEADER_SECRET', '');
 
 // Stay signed in this long (cookie + server session). Shared hosts often wipe
 // default /tmp sessions overnight; we also store a remember token in SQLite.
@@ -27,9 +29,8 @@ define('AUTH_LIFETIME', 90 * 24 * 60 * 60); // 90 days
 define('TELEGRAM_BOT_TOKEN', '');  // set to your bot token from @BotFather
 // Optional public @username. Empty = fetched via getMe and cached.
 define('TELEGRAM_BOT_USERNAME', '');
-// Optional webhook secret. Empty = derived from the bot token.
-// Set webhook: see DEPLOY.md
-define('TELEGRAM_WEBHOOK_SECRET', '');
+// Set a fresh random secret before enabling the Telegram webhook. See DEPLOY.md.
+define('TELEGRAM_WEBHOOK_HEADER_SECRET', '');
 
 // ─── Email ────────────────────────────────────────────────────
 // Set SMTP_HOST to '' to use PHP mail() instead

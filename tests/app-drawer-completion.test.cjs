@@ -6,7 +6,7 @@ const { runInNewContext } = require('node:vm');
 const source = readFileSync(require.resolve('../js/app.js'), 'utf8');
 
 async function createApp(overrides = {}) {
-    const app = runInNewContext(`${source}\ntodoApp();`, { window: {}, URLSearchParams });
+    const app = runInNewContext(`${source}\ntodoApp();`, { window: {}, URLSearchParams, confirm: () => true });
     const task = { id: 7, title: 'Task from Telegram', tags: [], is_owner: true, ...overrides };
     const calls = [];
     app.t = key => key;
@@ -74,4 +74,58 @@ test('shared tasks cannot be completed by a non-owner', async () => {
     await app.toggleDrawerComplete(click());
     assert.equal(app.completingDrawer, false);
     assert.ok(app.drawer);
+});
+
+test('late comments from the previous selection do not appear on the open task', async () => {
+    const { app, task } = await createApp();
+    const next = { ...task, id: 9, title: 'Another task' };
+    let notifyStarted;
+    let finish;
+    const started = new Promise(resolve => { notifyStarted = resolve; });
+    app.api = async (method, action, body, params) => {
+        if (action === 'todo') return params.id === task.id ? task : next;
+        if (action === 'comments' && params.todo_id === task.id) {
+            return new Promise(resolve => { finish = resolve; notifyStarted(); });
+        }
+        if (action === 'comments') return [{ id: 2, body: 'Comment on the open task' }];
+        return [];
+    };
+    const pending = app.openDrawer(task);
+    await started;
+    await app.openDrawer(next);
+    finish([{ id: 1, body: 'Comment on the previous task' }]);
+    await pending;
+
+    assert.equal(app.drawer.id, next.id);
+    assert.equal(app.comments[0].id, 2);
+    assert.equal(app.drawerLoading, false);
+});
+
+test('a temporary refresh failure keeps the open task and its draft', async () => {
+    const { app, task } = await createApp();
+    app.newComment = 'Unsaved comment';
+    app.api = async () => ({ status: 503, error: 'Unavailable' });
+    await app.refreshOpenDrawer();
+    assert.equal(app.drawer.id, task.id);
+    assert.equal(app.drawerRefreshError, true);
+    assert.equal(app.newComment, 'Unsaved comment');
+
+    app.api = async () => task;
+    await app.refreshOpenDrawer();
+    assert.equal(app.drawerRefreshError, false);
+
+    app.api = async () => ({ status: 404, error: 'Not found' });
+    await app.refreshOpenDrawer();
+    assert.equal(app.drawer, null);
+});
+
+test('deletion failure keeps the task in the list and in the drawer', async () => {
+    const { app, task } = await createApp();
+    app.todos = [task];
+    app.api = async () => ({ status: 500, error: 'Delete failed' });
+    await app.deleteTodo(task.id);
+    assert.equal(app.lastToast, 'Delete failed');
+    assert.equal(app.todos[0].id, task.id);
+    assert.equal(app.drawer.id, task.id);
+    assert.equal(app.deletingTodo, false);
 });

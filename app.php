@@ -1,11 +1,15 @@
 <?php
 require_once __DIR__ . '/config.php';
 
-if (!defined('ALLOW_REGISTRATION')) define('ALLOW_REGISTRATION', true);
+if (!defined('ALLOW_REGISTRATION')) define('ALLOW_REGISTRATION', false);
 if (!defined('MAX_UPLOAD_BYTES'))   define('MAX_UPLOAD_BYTES', 20 * 1024 * 1024);
-if (!defined('CRON_SECRET'))        define('CRON_SECRET', '');
+if (!defined('UPLOADS_PATH')) {
+    $dbDir = dirname(DB_PATH);
+    define('UPLOADS_PATH', (basename($dbDir) === 'db' ? dirname($dbDir) : $dbDir) . '/uploads');
+}
+if (!defined('CRON_HEADER_SECRET')) define('CRON_HEADER_SECRET', '');
 if (!defined('AUTH_LIFETIME'))      define('AUTH_LIFETIME', 90 * 24 * 60 * 60); // 90 days
-if (!defined('TELEGRAM_WEBHOOK_SECRET')) define('TELEGRAM_WEBHOOK_SECRET', '');
+if (!defined('TELEGRAM_WEBHOOK_HEADER_SECRET')) define('TELEGRAM_WEBHOOK_HEADER_SECRET', '');
 if (!defined('TELEGRAM_BOT_USERNAME')) define('TELEGRAM_BOT_USERNAME', '');
 
 // ─── Database connection (singleton) ──────────────────────────
@@ -23,6 +27,13 @@ function db(): PDO {
 }
 
 function db_init(PDO $db): void {
+    $notification_schema = "CREATE TABLE IF NOT EXISTS notifications_sent (
+        todo_id          INTEGER NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+        user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        schedule_version INTEGER NOT NULL DEFAULT 0,
+        sent_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (todo_id, user_id, schedule_version)
+    )";
     $db->exec("
         CREATE TABLE IF NOT EXISTS users (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,6 +53,7 @@ function db_init(PDO $db): void {
             user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             title            TEXT NOT NULL,
             active_at        DATETIME,
+            schedule_version INTEGER NOT NULL DEFAULT 0,
             completed_at     DATETIME,
             recur_type       TEXT DEFAULT NULL,
             recur_interval   INTEGER DEFAULT 1,
@@ -68,12 +80,7 @@ function db_init(PDO $db): void {
             shared_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (todo_id, user_id)
         );
-        CREATE TABLE IF NOT EXISTS notifications_sent (
-            todo_id  INTEGER NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
-            user_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            sent_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (todo_id, user_id)
-        );
+        {$notification_schema};
         CREATE TABLE IF NOT EXISTS files (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             todo_id     INTEGER NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
@@ -104,7 +111,18 @@ function db_init(PDO $db): void {
             user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             expires_at DATETIME NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS email_verification_tokens (
+            user_id    INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            token_hash TEXT NOT NULL,
+            expires_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS login_attempts (
+            bucket     TEXT PRIMARY KEY,
+            attempts   INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL
+        );
     ");
+    migrate_notification_schedule($db, $notification_schema);
     // Migrations: add columns if they don't exist yet
     foreach ([
         "ALTER TABLE users ADD COLUMN telegram_chat_id TEXT",
@@ -113,12 +131,36 @@ function db_init(PDO $db): void {
         "ALTER TABLE todos ADD COLUMN parent_id INTEGER REFERENCES todos(id) ON DELETE CASCADE",
         "ALTER TABLE users ADD COLUMN locale TEXT NOT NULL DEFAULT 'en'",
         "ALTER TABLE users ADD COLUMN display_name TEXT",
+        "ALTER TABLE users ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0",
     ] as $sql) {
         try { $db->exec($sql); } catch (PDOException) {}
     }
     try {
         $db->exec("CREATE UNIQUE INDEX IF NOT EXISTS users_display_name_lower ON users (lower(display_name)) WHERE display_name IS NOT NULL AND display_name != ''");
     } catch (PDOException) {}
+}
+
+function migrate_notification_schedule(PDO $db, string $notification_schema): void {
+    $version_column = "SELECT 1 FROM pragma_table_info('todos') WHERE name = 'schedule_version'";
+    if ($db->query($version_column)->fetchColumn()) return;
+
+    $db->exec('BEGIN IMMEDIATE');
+    try {
+        // Another request may have upgraded the database while this one waited for the lock.
+        if (!$db->query($version_column)->fetchColumn()) {
+            $db->exec('ALTER TABLE todos ADD COLUMN schedule_version INTEGER NOT NULL DEFAULT 0');
+            $db->exec('ALTER TABLE notifications_sent RENAME TO notifications_sent_legacy');
+            $db->exec($notification_schema);
+            $db->exec('INSERT INTO notifications_sent (todo_id, user_id, sent_at)
+                       SELECT todo_id, user_id, sent_at FROM notifications_sent_legacy');
+            $db->exec('DROP TABLE notifications_sent_legacy');
+        }
+        $db->exec('COMMIT');
+    } catch (Throwable $e) {
+        $db->exec('ROLLBACK');
+        throw $e;
+    }
 }
 
 // ─── Telegram ─────────────────────────────────────────────────
@@ -249,33 +291,19 @@ function telegram_configured(): bool {
 }
 
 function telegram_webhook_secret(): string {
-    return TELEGRAM_WEBHOOK_SECRET !== ''
-        ? TELEGRAM_WEBHOOK_SECRET
-        : substr(hash('sha256', 'wh:' . TELEGRAM_BOT_TOKEN), 0, 32);
-}
-
-function telegram_webhook_url(): string {
-    $base = rtrim(APP_URL, '/');
-    if (str_starts_with($base, 'http://')) {
-        $base = 'https://' . substr($base, strlen('http://'));
-    }
-    return $base . '/telegram.php?key=' . rawurlencode(telegram_webhook_secret());
-}
-
-function telegram_webhook_status(): array {
-    $info = telegram_api('getWebhookInfo');
-    $url = (is_array($info) && !empty($info['ok'])) ? (string) ($info['result']['url'] ?? '') : '';
-    $err = (is_array($info) && !empty($info['ok'])) ? (string) ($info['result']['last_error_message'] ?? '') : '';
-    $on = $url !== '';
-    meta_set('telegram_webhook', $on ? '1' : '0');
-    return ['on' => $on, 'error' => $err];
+    $secret = TELEGRAM_WEBHOOK_HEADER_SECRET;
+    return preg_match('/\A[A-Za-z0-9_-]{32,256}\z/', $secret) ? $secret : '';
 }
 
 function telegram_set_webhook(bool $enable): array {
     if ($enable) {
+        $secret = telegram_webhook_secret();
+        if ($secret === '' || !str_starts_with(APP_URL, 'https://')) {
+            return ['ok' => false, 'error' => 'Set a fresh TELEGRAM_WEBHOOK_HEADER_SECRET and an HTTPS APP_URL.'];
+        }
         $res = telegram_api('setWebhook', [
-            'url' => telegram_webhook_url(),
-            'secret_token' => telegram_webhook_secret(),
+            'url' => rtrim(APP_URL, '/') . '/telegram.php',
+            'secret_token' => $secret,
             'allowed_updates' => ['message'],
         ]);
     } else {
@@ -348,17 +376,32 @@ function telegram_unlink_user(int $uid): void {
 
 // ─── Email ────────────────────────────────────────────────────
 function send_email(string $to, string $subject, string $html): bool {
+    if (!filter_var($to, FILTER_VALIDATE_EMAIL) || preg_match('/[\r\n]/', $to)) return false;
     if (SMTP_HOST !== '') {
         return smtp_send($to, $subject, $html);
     }
     $headers  = "MIME-Version: 1.0\r\n";
     $headers .= "Content-Type: text/html; charset=UTF-8\r\n";
-    $headers .= "From: " . SMTP_FROM_NAME . " <" . SMTP_FROM . ">\r\n";
-    return mail($to, smtp_header_safe($subject), $html, $headers);
+    $headers .= "Content-Transfer-Encoding: base64\r\n";
+    $headers .= "From: " . smtp_header_safe(SMTP_FROM_NAME) . " <" . smtp_header_safe(SMTP_FROM) . ">\r\n";
+    return mail($to, smtp_header_safe($subject), chunk_split(base64_encode($html)), $headers);
 }
 
 function smtp_header_safe(string $s): string {
     return str_replace(["\r", "\n"], '', $s);
+}
+
+function smtp_message_data(string $to, string $subject, string $html): string {
+    $fromName = smtp_header_safe(SMTP_FROM_NAME);
+    $from = smtp_header_safe(SMTP_FROM);
+    // MIME-encode the body so user content cannot introduce SMTP control lines.
+    return "From: {$fromName} <{$from}>\r\n"
+        . 'To: ' . smtp_header_safe($to) . "\r\n"
+        . 'Subject: ' . smtp_header_safe($subject) . "\r\n"
+        . "MIME-Version: 1.0\r\n"
+        . "Content-Type: text/html; charset=UTF-8\r\n"
+        . "Content-Transfer-Encoding: base64\r\n\r\n"
+        . chunk_split(base64_encode($html));
 }
 
 function smtp_send(string $to, string $subject, string $html): bool {
@@ -366,11 +409,12 @@ function smtp_send(string $to, string $subject, string $html): bool {
     $port  = (int) SMTP_PORT;
     $errno = $errstr = null;
 
-    if ($port === 465) {
-        $sock = @stream_socket_client("ssl://{$host}:{$port}", $errno, $errstr, 10);
-    } else {
-        $sock = @fsockopen($host, $port, $errno, $errstr, 10);
-    }
+    if (!filter_var(SMTP_FROM, FILTER_VALIDATE_EMAIL) || preg_match('/[\r\n]/', SMTP_FROM)) return false;
+    $transport = $port === 465 ? 'ssl' : 'tcp';
+    $context = stream_context_create(['ssl' => [
+        'verify_peer' => true, 'verify_peer_name' => true, 'peer_name' => $host,
+    ]]);
+    $sock = @stream_socket_client("{$transport}://{$host}:{$port}", $errno, $errstr, 10, STREAM_CLIENT_CONNECT, $context);
     if (!$sock) return false;
 
     stream_set_timeout($sock, 10);
@@ -396,7 +440,7 @@ function smtp_send(string $to, string $subject, string $html): bool {
     $ok = $expect('220');
     if ($ok) { $send('EHLO localhost'); $ok = $expect_ehlo(); }
 
-    if ($ok && $port === 587) {
+    if ($ok && $port !== 465) {
         $send('STARTTLS');
         $ok = $expect('220');
         if ($ok) {
@@ -415,13 +459,15 @@ function smtp_send(string $to, string $subject, string $html): bool {
     if ($ok) { $send('DATA'); $ok = $expect('354'); }
 
     if ($ok) {
-        $msg  = 'From: ' . smtp_header_safe(SMTP_FROM_NAME) . " <{$from}>\r\n";
-        $msg .= 'To: ' . smtp_header_safe($to) . "\r\n";
-        $msg .= 'Subject: ' . smtp_header_safe($subject) . "\r\n";
-        $msg .= "MIME-Version: 1.0\r\n";
-        $msg .= "Content-Type: text/html; charset=UTF-8\r\n\r\n";
-        $msg .= $html . "\r\n";
-        $send($msg . '.');
+        $data = smtp_message_data($to, $subject, $html) . ".\r\n";
+        while ($data !== '') {
+            $written = fwrite($sock, $data);
+            if (!$written) {
+                fclose($sock);
+                return false;
+            }
+            $data = substr($data, $written);
+        }
         $ok = $expect('250');
     }
 
@@ -440,13 +486,12 @@ function session_cookie_path(): string {
 function start_session(): void {
     if (session_status() !== PHP_SESSION_NONE) return;
     $lifetime = AUTH_LIFETIME;
-    $save = __DIR__ . '/db/sessions';
-    if (!is_dir($save)) {
-        @mkdir($save, 0775, true);
+    $save = dirname(DB_PATH) . '/sessions';
+    if ((!is_dir($save) && !@mkdir($save, 0700) && !is_dir($save)) || !is_writable($save)) {
+        throw new RuntimeException('The private session directory must be writable.');
     }
-    if (is_dir($save) && is_writable($save)) {
-        session_save_path($save);
-    }
+    session_save_path($save);
+    ini_set('session.use_strict_mode', '1');
     ini_set('session.gc_maxlifetime', (string) $lifetime);
     ini_set('session.cookie_lifetime', (string) $lifetime);
     session_set_cookie_params([
@@ -462,7 +507,13 @@ function start_session(): void {
 function session_user(): ?array {
     start_session();
     if (!empty($_SESSION['user']['id'])) {
-        return $_SESSION['user'];
+        $stmt = db()->prepare('SELECT auth_version FROM users WHERE id=?');
+        $stmt->execute([$_SESSION['user']['id']]);
+        $version = $stmt->fetchColumn();
+        if ($version !== false && (int)$version === ($_SESSION['user']['auth_version'] ?? null)) {
+            return $_SESSION['user'];
+        }
+        unset($_SESSION['user'], $_SESSION['_csrf']);
     }
     if (PHP_SAPI === 'cli') return null;
     $user = user_from_remember_cookie();
@@ -477,17 +528,17 @@ function todo_url(int $todo_id): string {
 
 function safe_next(?string $next): string {
     $home = rtrim(APP_URL, '/') . '/';
-    if (!is_string($next) || $next === '') return $home;
-    if (preg_match('#^https?://#i', $next)) {
-        return str_starts_with($next, $home) || rtrim($next, '/') === rtrim(APP_URL, '/') ? $next : $home;
-    }
-    if ($next[0] !== '/' || str_contains($next, "\n") || str_contains($next, "\r")) return $home;
-    $app = parse_url(APP_URL, PHP_URL_PATH);
-    $app = is_string($app) ? rtrim($app, '/') : '';
-    $path = parse_url($next, PHP_URL_PATH) ?? '';
-    if ($app !== '' && $path !== '' && $path !== $app && !str_starts_with($path, $app . '/')) {
+    if ($next === null || $next === '' || preg_match('/[\x00-\x20\x7f\\\\]/', $next)) return $home;
+    $absolute = str_starts_with($next, $home) || $next === rtrim($home, '/');
+    if (!$absolute && (!str_starts_with($next, '/') || str_starts_with($next, '//'))) {
         return $home;
     }
+    $path = parse_url($next, PHP_URL_PATH);
+    if (!is_string($path) || preg_match('~(?:^|/)\.{1,2}(?:/|$)|\\\\~', rawurldecode($path))) {
+        return $home;
+    }
+    $app = rtrim((string)parse_url(APP_URL, PHP_URL_PATH), '/');
+    if ($app !== '' && $path !== $app && !str_starts_with($path, $app . '/')) return $home;
     return $next;
 }
 
@@ -525,8 +576,23 @@ function registration_open(): bool {
     try {
         return (int) db()->query('SELECT COUNT(*) FROM users')->fetchColumn() === 0;
     } catch (Throwable) {
-        return true;
+        return false;
     }
+}
+
+function login_attempt_allowed(string $bucket, int $limit): bool {
+    $now = time();
+    db()->prepare('DELETE FROM login_attempts WHERE expires_at <= ?')->execute([$now]);
+    $attempt = db()->prepare(
+        'INSERT INTO login_attempts (bucket, attempts, expires_at) VALUES (?, 1, ?)
+         ON CONFLICT(bucket) DO UPDATE SET attempts = attempts + 1 WHERE attempts < ?'
+    );
+    $attempt->execute([$bucket, $now + 15 * 60, $limit]);
+    return $attempt->rowCount() === 1;
+}
+
+function login_account_bucket(string $email): string {
+    return 'account:' . hash('sha256', strtolower($email));
 }
 
 function login_user(array $user, bool $issue_remember = true): void {
@@ -538,10 +604,11 @@ function login_user(array $user, bool $issue_remember = true): void {
         'email'          => $user['email'],
         'notify_minutes' => $user['notify_minutes'] ?? 5,
         'locale'         => normalize_locale($user['locale'] ?? current_locale()),
+        'auth_version'   => (int)$user['auth_version'],
     ];
     set_locale($_SESSION['user']['locale']);
     if ($issue_remember) {
-        issue_remember_token((int) $user['id']);
+        issue_remember_token((int)$user['id'], (int)$user['auth_version']);
     }
 }
 
@@ -555,7 +622,7 @@ function auth_cookie_opts(int $expires): array {
     ];
 }
 
-function issue_remember_token(int $uid): void {
+function issue_remember_token(int $uid, int $version): void {
     db()->prepare('DELETE FROM remember_tokens WHERE user_id=? AND expires_at <= datetime("now","localtime")')->execute([$uid]);
     $stmt = db()->prepare('SELECT COUNT(*) FROM remember_tokens WHERE user_id=?');
     $stmt->execute([$uid]);
@@ -566,9 +633,14 @@ function issue_remember_token(int $uid): void {
     }
     $token = bin2hex(random_bytes(32));
     $exp   = date('Y-m-d H:i:s', time() + AUTH_LIFETIME);
-    db()->prepare('INSERT INTO remember_tokens (user_id, token_hash, expires_at) VALUES (?,?,?)')
-        ->execute([$uid, hash('sha256', $token), $exp]);
-    setcookie('remember', $uid . ':' . $token, auth_cookie_opts(time() + AUTH_LIFETIME));
+    $insert = db()->prepare(
+        'INSERT INTO remember_tokens (user_id, token_hash, expires_at)
+         SELECT id, ?, ? FROM users WHERE id=? AND auth_version=?'
+    );
+    $insert->execute([hash('sha256', $token), $exp, $uid, $version]);
+    if ($insert->rowCount() === 1) {
+        setcookie('remember', $uid . ':' . $token, auth_cookie_opts(time() + AUTH_LIFETIME));
+    }
 }
 
 function user_from_remember_cookie(): ?array {
@@ -576,14 +648,17 @@ function user_from_remember_cookie(): ?array {
     if (!preg_match('/^(\d+):([a-f0-9]{64})$/', $raw, $m)) return null;
     $uid  = (int) $m[1];
     $hash = hash('sha256', $m[2]);
-    $stmt = db()->prepare('SELECT id FROM remember_tokens WHERE user_id=? AND token_hash=? AND expires_at > datetime("now","localtime")');
+    $stmt = db()->prepare(
+        'SELECT u.*, r.id AS remember_id FROM remember_tokens r JOIN users u ON u.id=r.user_id
+         WHERE r.user_id=? AND r.token_hash=? AND r.expires_at > datetime("now","localtime")'
+    );
     $stmt->execute([$uid, $hash]);
     $row = $stmt->fetch();
     if (!$row) return null;
-    db()->prepare('DELETE FROM remember_tokens WHERE id=?')->execute([$row['id']]);
-    $u = db()->prepare('SELECT * FROM users WHERE id=?');
-    $u->execute([$uid]);
-    return $u->fetch() ?: null;
+    $stmt->closeCursor();
+    $consume = db()->prepare('DELETE FROM remember_tokens WHERE id=?');
+    $consume->execute([$row['remember_id']]);
+    return $consume->rowCount() === 1 ? $row : null;
 }
 
 function clear_remember(int $uid): void {
@@ -623,8 +698,12 @@ function password_reset_request(string $email): void {
 
     db()->prepare('DELETE FROM password_reset_tokens WHERE user_id=? OR expires_at <= datetime("now","localtime")')->execute([$uid]);
     $token = bin2hex(random_bytes(16));
-    db()->prepare('INSERT INTO password_reset_tokens (token_hash, user_id, expires_at) VALUES (?,?,datetime("now","localtime","+30 minutes"))')
-        ->execute([hash('sha256', $token), $uid]);
+    $insert = db()->prepare(
+        'INSERT INTO password_reset_tokens (token_hash, user_id, expires_at)
+         SELECT ?, id, datetime("now","localtime","+30 minutes") FROM users WHERE id=? AND auth_version=?'
+    );
+    $insert->execute([hash('sha256', $token), $uid, $user['auth_version']]);
+    if ($insert->rowCount() !== 1) return;
 
     $loc = normalize_locale($user['locale'] ?? 'en');
     $link = password_reset_url($token);
@@ -645,12 +724,82 @@ function password_reset_request(string $email): void {
 }
 
 function password_reset_complete(int $uid, string $token, string $new): bool {
+    $token = strtolower(trim($token));
     $row = password_reset_user($token);
     if (!$row || (int) $row['id'] !== $uid) return false;
-    db()->prepare('UPDATE users SET password_hash=? WHERE id=?')->execute([password_hash($new, PASSWORD_DEFAULT), $uid]);
-    db()->prepare('DELETE FROM password_reset_tokens WHERE user_id=?')->execute([$uid]);
-    clear_remember($uid);
+    return replace_password($row, $new, hash('sha256', $token));
+}
+
+function request_email_verification(int $uid): bool {
+    $stmt = db()->prepare('SELECT email, email_verified, locale FROM users WHERE id=?');
+    $stmt->execute([$uid]);
+    $user = $stmt->fetch();
+    if (!$user) return false;
+    if ($user['email_verified']) return true;
+
+    $now = time();
+    $token = bin2hex(random_bytes(32));
+    $hash = hash('sha256', $token);
+    $save = db()->prepare(
+        'INSERT INTO email_verification_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)
+         ON CONFLICT(user_id) DO UPDATE SET token_hash=excluded.token_hash, expires_at=excluded.expires_at
+         WHERE expires_at <= ?'
+    );
+    $save->execute([$uid, $hash, $now + 1800, $now + 1740]);
+    if ($save->rowCount() !== 1) return true;
+
+    $locale = $user['locale'];
+    $url = rtrim(APP_URL, '/') . '/auth.php?verify_email=' . $token;
+    $subject = t('auth.verify_email_action', [], $locale);
+    $html = '<p>' . h(t('auth.verify_email_body', [], $locale)) . '</p>'
+        . '<p><a href="' . h($url) . '">' . h($subject) . '</a></p>';
+    if (send_email($user['email'], '[' . APP_NAME . '] ' . $subject, $html)) {
+        return true;
+    }
+    db()->prepare('DELETE FROM email_verification_tokens WHERE user_id=? AND token_hash=?')->execute([$uid, $hash]);
+    return false;
+}
+
+function verify_email(int $uid, string $token): bool {
+    if (!preg_match('/\A[a-f0-9]{64}\z/', $token)) return false;
+    $hash = hash('sha256', $token);
+    $update = db()->prepare(
+        'UPDATE users SET email_verified=1 WHERE id=? AND email_verified=0 AND EXISTS (
+            SELECT 1 FROM email_verification_tokens WHERE user_id=users.id AND token_hash=? AND expires_at>?
+         )'
+    );
+    $update->execute([$uid, $hash, time()]);
+    if ($update->rowCount() !== 1) return false;
+    db()->prepare('DELETE FROM email_verification_tokens WHERE user_id=?')->execute([$uid]);
     return true;
+}
+
+function replace_password(array $user, string $new, ?string $resetHash = null): bool {
+    $sql = 'UPDATE users SET password_hash=?, auth_version=auth_version+1 WHERE id=? AND auth_version=?';
+    $params = [password_hash($new, PASSWORD_DEFAULT), $user['id'], $user['auth_version']];
+    if ($resetHash !== null) {
+        $sql .= ' AND EXISTS (SELECT 1 FROM password_reset_tokens
+                              WHERE token_hash=? AND user_id=users.id AND expires_at > datetime("now","localtime"))';
+        $params[] = $resetHash;
+    }
+    $db = db();
+    $db->beginTransaction();
+    try {
+        $update = $db->prepare($sql);
+        $update->execute($params);
+        if ($update->rowCount() !== 1) {
+            $db->rollBack();
+            return false;
+        }
+        foreach (['remember_tokens', 'password_reset_tokens', 'email_verification_tokens'] as $table) {
+            $db->prepare("DELETE FROM {$table} WHERE user_id=?")->execute([$user['id']]);
+        }
+        $db->commit();
+        return true;
+    } catch (Throwable $e) {
+        $db->rollBack();
+        throw $e;
+    }
 }
 
 function logout_user(): void {
@@ -771,12 +920,10 @@ function allowed_upload_mimes(): array {
     ];
 }
 
-function delete_todo_uploads(int $todo_id): void {
-    $stmt = db()->prepare('SELECT uploaded_by, stored_as FROM files WHERE todo_id = ?');
-    $stmt->execute([$todo_id]);
+function delete_todo_uploads(array $files): void {
     $dirs = [];
-    foreach ($stmt as $row) {
-        $dir  = __DIR__ . '/uploads/' . (int) $row['uploaded_by'] . '/' . $todo_id;
+    foreach ($files as $row) {
+        $dir  = UPLOADS_PATH . '/' . (int) $row['uploaded_by'] . '/' . (int) $row['todo_id'];
         $path = $dir . '/' . basename((string) $row['stored_as']);
         if (is_file($path)) @unlink($path);
         $dirs[$dir] = true;
@@ -1054,7 +1201,7 @@ function find_share_user(int $uid, string $who): ?array {
     $who = trim($who);
     if ($who === '') return null;
     if (str_contains($who, '@')) {
-        $stmt = db()->prepare('SELECT id, email, display_name FROM users WHERE email=? AND id!=?');
+        $stmt = db()->prepare('SELECT id, email, display_name FROM users WHERE email=? AND email_verified=1 AND id!=?');
         $stmt->execute([$who, $uid]);
     } else {
         $stmt = db()->prepare('SELECT id, email, display_name FROM users WHERE lower(display_name)=lower(?) AND display_name != \'\' AND id!=?');

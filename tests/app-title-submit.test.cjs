@@ -5,8 +5,8 @@ const { runInNewContext } = require('node:vm');
 
 const source = readFileSync(require.resolve('../js/app.js'), 'utf8');
 
-function createApp() {
-    const app = runInNewContext(`${source}\ntodoApp();`, { window: {} });
+function createApp(globals = {}) {
+    const app = runInNewContext(`${source}\ntodoApp();`, { window: {}, ...globals });
     app.t = key => key;
     app.toast = () => {};
     app.loadTodos = async () => {};
@@ -42,6 +42,23 @@ test('Enter creates the task with its assignments and closes the dialog', async 
     assert.equal(event.defaultPrevented, true);
     assert.equal(app.modal, null);
     assert.equal(app.savingForm, false);
+});
+
+test('quick dates use the server day, preserve time, and keep the Upcoming view after save', async () => {
+    const app = createApp();
+    app.filterStatus = 'upcoming';
+    app.summary = { local_date: '2026-12-31' };
+    app.form.active_time = '14:30';
+    app.chooseScheduleDate(1);
+    let savedTask;
+    app.api = async (method, action, payload) => {
+        assert.equal(payload.active_at, '2027-01-01 14:30:00');
+        return { id: 4, ...payload };
+    };
+    app.toast = (msg, timeout, keepUndo, todo) => { savedTask = todo; };
+    await app.onTitleKeydown(enter());
+    assert.equal(app.filterStatus, 'upcoming');
+    assert.equal(savedTask.id, 4);
 });
 
 for (const dropdown of ['tag', 'share']) {
@@ -105,4 +122,28 @@ test('Enter during text composition does not select a suggestion or save', async
     assert.equal(event.defaultPrevented, false);
     assert.equal(app.form.tag_ids.length, 0);
     assert.equal(app.modal, 'create');
+});
+
+test('a sharing lookup only suggests a recipient for the current mention', async () => {
+    const scheduled = [];
+    const app = createApp({ setTimeout: callback => scheduled.push(callback) });
+    let resolveFirst;
+    app.api = (method, action, body, { q }) => {
+        assert.equal(action, 'find_user');
+        if (q === 'Peter') return new Promise(resolve => { resolveFirst = resolve; });
+        assert.equal(q, 'Lisa');
+        return Promise.resolve({ id: 3, label: 'Lisa' });
+    };
+
+    app.form.title = 'New task +Peter';
+    app.parseTagsInTitle();
+    const first = scheduled.shift()();
+    app.form.title = 'New task +Lisa';
+    app.parseTagsInTitle();
+    await scheduled.shift()();
+    resolveFirst({ id: 2, label: 'Peter' });
+    await first;
+    assert.equal(app.shareDropdown[0].label, 'Lisa');
+    await app.onTitleKeydown(enter());
+    assert.equal(app.form.share_emails[0], 'Lisa');
 });

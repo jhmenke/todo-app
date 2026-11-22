@@ -1,6 +1,8 @@
 <?php
 require_once __DIR__ . '/app.php';
 
+header('Referrer-Policy: no-referrer');
+header('Cache-Control: no-store');
 start_session();
 
 if (isset($_GET['locale'])) {
@@ -8,13 +10,23 @@ if (isset($_GET['locale'])) {
     $q = [];
     if (isset($_GET['next'])) $q['next'] = (string) $_GET['next'];
     if (isset($_GET['reset'])) $q['reset'] = (string) $_GET['reset'];
+    if (isset($_GET['verify_email'])) $q['verify_email'] = (string) $_GET['verify_email'];
     if (isset($_GET['forgot'])) $q['forgot'] = '1';
     $qs = $q ? '?' . http_build_query($q) : '';
     header('Location: ' . rtrim(APP_URL, '/') . '/auth.php' . $qs);
     exit;
 }
 
-$next = safe_next($_POST['next'] ?? $_GET['next'] ?? '');
+$next = $_POST['next'] ?? $_GET['next'] ?? '';
+$next = safe_next(is_string($next) ? $next : '');
+
+if (isset($_GET['verify_email']) && $_SERVER['REQUEST_METHOD'] === 'GET') {
+    $user = require_auth();
+    $token = $_GET['verify_email'];
+    $verified = is_string($token) && verify_email((int)$user['id'], $token);
+    header('Location: ' . rtrim(APP_URL, '/') . '/?email_verification=' . ($verified ? 'success' : 'invalid'));
+    exit;
+}
 
 // Already logged in (session or remember-me cookie)
 if (session_user()) {
@@ -50,15 +62,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } elseif ($action === 'login') {
         $email = trim($_POST['email'] ?? '');
         $pass  = $_POST['password'] ?? '';
-        $stmt  = db()->prepare('SELECT * FROM users WHERE email = ?');
-        $stmt->execute([$email]);
-        $user = $stmt->fetch();
-        if ($user && password_verify($pass, $user['password_hash'])) {
-            login_user($user);
-            header('Location: ' . $next);
-            exit;
+        $bucket = login_account_bucket($email);
+        if (!login_attempt_allowed('ip:' . ($_SERVER['REMOTE_ADDR'] ?? 'unknown'), 40) ||
+            !login_attempt_allowed($bucket, 8)) {
+            http_response_code(429);
+            header('Retry-After: 900');
+            $error = t('auth.login_throttled');
+        } else {
+            $stmt = db()->prepare('SELECT * FROM users WHERE email = ?');
+            $stmt->execute([$email]);
+            $user = $stmt->fetch();
+            if ($user && password_verify($pass, $user['password_hash'])) {
+                db()->prepare('DELETE FROM login_attempts WHERE bucket=?')->execute([$bucket]);
+                login_user($user);
+                header('Location: ' . $next);
+                exit;
+            }
+            $error = t('auth.invalid_credentials');
         }
-        $error = t('auth.invalid_credentials');
         $tab   = 'login';
 
     } elseif ($action === 'register') {
@@ -80,11 +101,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } else {
                 try {
                     $hash = password_hash($pass, PASSWORD_DEFAULT);
-                    $stmt = db()->prepare('INSERT INTO users (email, password_hash, locale) VALUES (?, ?, ?)');
-                    $stmt->execute([$email, $hash, current_locale()]);
-                    login_user(['id' => db()->lastInsertId(), 'email' => $email, 'notify_minutes' => 5, 'locale' => current_locale()]);
-                    header('Location: ' . $next);
-                    exit;
+                    $stmt = db()->prepare(
+                        'INSERT INTO users (email, password_hash, locale)
+                         SELECT ?, ?, ? WHERE CAST(? AS INTEGER)=1 OR NOT EXISTS (SELECT 1 FROM users)'
+                    );
+                    $stmt->execute([$email, $hash, current_locale(), (int)ALLOW_REGISTRATION]);
+                    if ($stmt->rowCount() === 1) {
+                        login_user(['id' => db()->lastInsertId(), 'email' => $email, 'locale' => current_locale(), 'auth_version' => 1]);
+                        header('Location: ' . $next);
+                        exit;
+                    }
+                    $error = t('auth.registration_closed');
+                    $tab = 'login';
                 } catch (PDOException $e) {
                     $error = t('auth.email_taken');
                 }
@@ -135,20 +163,11 @@ if (isset($_GET['updated'])) {
     <title><?= h(APP_NAME) ?></title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    fontFamily: { sans: ['"Plus Jakarta Sans"', 'ui-sans-serif', 'system-ui', 'sans-serif'] }
-                }
-            }
-        }
-    </script>
+    <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..800&amp;family=Source+Sans+3:wght@400..700&amp;display=swap" rel="stylesheet">
     <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="css/app.css?v=8">
+    <link rel="stylesheet" href="css/app.css?v=<?= h(substr(hash_file('sha256', __DIR__ . '/css/app.css'), 0, 12)) ?>">
 </head>
-<body class="auth-shell min-h-screen flex items-center justify-center p-6 font-sans">
+<body class="auth-shell min-h-screen flex items-center justify-center p-6">
     <div class="auth-card">
         <div class="text-center mb-7">
             <div class="brand justify-center mb-3">
@@ -157,7 +176,7 @@ if (isset($_GET['updated'])) {
                 </span>
             </div>
             <div class="brand-name text-2xl"><?= h(APP_NAME) ?></div>
-            <p class="text-sm text-slate-400 mt-1.5"><?= h(t('auth.subtitle')) ?></p>
+            <p class="text-sm muted-text mt-1.5"><?= h(t('auth.subtitle')) ?></p>
         </div>
 
         <?php if ($reg_open && ($tab === 'login' || $tab === 'register')): ?>
@@ -191,7 +210,7 @@ if (isset($_GET['updated'])) {
             </div>
             <button type="submit" class="btn-primary w-full py-2.5 mt-1"><?= h(t('auth.sign_in')) ?></button>
             <p class="text-center text-sm pt-1">
-                <a href="?forgot=1&amp;next=<?= h(rawurlencode($next)) ?>" class="text-slate-500 hover:text-slate-800"><?= h(t('auth.forgot_password')) ?></a>
+                <a href="?forgot=1&amp;next=<?= h(rawurlencode($next)) ?>" class="auth-link"><?= h(t('auth.forgot_password')) ?></a>
             </p>
         </form>
 
@@ -199,7 +218,7 @@ if (isset($_GET['updated'])) {
             <input type="hidden" name="action" value="reset_request">
             <input type="hidden" name="next" value="<?= h($next) ?>">
             <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
-            <p class="text-sm text-slate-500"><?= h(t('auth.reset_hint')) ?></p>
+            <p class="text-sm muted-text"><?= h(t('auth.reset_hint')) ?></p>
             <div>
                 <label class="block text-sm font-medium mb-1.5"><?= h(t('auth.email')) ?></label>
                 <input type="email" name="email" required autocomplete="email"
@@ -208,7 +227,7 @@ if (isset($_GET['updated'])) {
             </div>
             <button type="submit" class="btn-primary w-full py-2.5 mt-1"><?= h(t('auth.reset_send')) ?></button>
             <p class="text-center text-sm pt-1">
-                <a href="auth.php?next=<?= h(rawurlencode($next)) ?>" class="text-slate-500 hover:text-slate-800"><?= h(t('auth.back_to_sign_in')) ?></a>
+                <a href="auth.php?next=<?= h(rawurlencode($next)) ?>" class="auth-link"><?= h(t('auth.back_to_sign_in')) ?></a>
             </p>
         </form>
 
@@ -218,7 +237,7 @@ if (isset($_GET['updated'])) {
             <input type="hidden" name="reset_token" value="<?= h($reset_token) ?>">
             <input type="hidden" name="csrf" value="<?= h(csrf_token()) ?>">
             <div>
-                <label class="block text-sm font-medium mb-1.5"><?= h(t('auth.new_password')) ?> <span class="text-slate-400 font-normal"><?= h(t('auth.password_min')) ?></span></label>
+                <label class="block text-sm font-medium mb-1.5"><?= h(t('auth.new_password')) ?> <span class="muted-text font-normal"><?= h(t('auth.password_min')) ?></span></label>
                 <input type="password" name="password" required autocomplete="new-password" class="w-full">
             </div>
             <div>
@@ -240,7 +259,7 @@ if (isset($_GET['updated'])) {
                     value="<?= h($_POST['email'] ?? '') ?>">
             </div>
             <div>
-                <label class="block text-sm font-medium mb-1.5"><?= h(t('auth.password')) ?> <span class="text-slate-400 font-normal"><?= h(t('auth.password_min')) ?></span></label>
+                <label class="block text-sm font-medium mb-1.5"><?= h(t('auth.password')) ?> <span class="muted-text font-normal"><?= h(t('auth.password_min')) ?></span></label>
                 <input type="password" name="password" required autocomplete="new-password"
                     class="w-full">
             </div>
